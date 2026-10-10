@@ -122,6 +122,37 @@ class AdapterTests(unittest.TestCase):
             api.check_library()
         self.assertEqual(caught.exception.code, "KOMGA_PROTOCOL")
 
+    def test_library_404_is_distinguished_from_api_404(self):
+        for api_missing in (False, True):
+            api = KomgaAPI("http://komga:25600", "user", "secret", "wrong-id")
+            def request(method, path):
+                if path == "/api/v1/libraries" and not api_missing:
+                    return [{"id": "real-id", "root": "/data"}]
+                raise ApiError("KOMGA_NOT_FOUND")
+            api.request = request
+            with self.assertRaises(ApiError) as caught:
+                api.check_library()
+            self.assertEqual(caught.exception.code, "KOMGA_API_NOT_FOUND" if api_missing else "KOMGA_LIBRARY_NOT_FOUND")
+
+    def test_permission_repair_scopes_ownership_and_preserves_files(self):
+        import os
+        scripts = Path(__file__).parents[1] / "scripts"
+        with patch.object(sys, "path", [str(scripts), *sys.path]):
+            spec = importlib.util.spec_from_file_location("repair_permissions", scripts / "repair_permissions.py")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "tasks.sqlite"
+            database.write_bytes(b"preserve")
+            with patch.object(module.os, "chown", create=True) as chown, patch.object(module.os, "chmod"):
+                module.repair(root, 1000, 1000)
+                self.assertEqual(chown.call_count, 2)
+                for call in chown.call_args_list:
+                    self.assertIn(call.args[0], (root, database))
+                    self.assertFalse(call.kwargs["follow_symlinks"])
+            self.assertEqual(database.read_bytes(), b"preserve")
+
 
 if __name__ == "__main__":
     unittest.main()

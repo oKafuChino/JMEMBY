@@ -85,7 +85,21 @@ class KomgaAPI:
         return result
 
     def check_library(self):
-        library = self.request("GET", f"/api/v1/libraries/{quote(self.library_id, safe='')}")
+        try:
+            library = self.request("GET", f"/api/v1/libraries/{quote(self.library_id, safe='')}")
+        except ApiError as exc:
+            if exc.code != "KOMGA_NOT_FOUND":
+                raise
+            # Read-only probe distinguishes an incorrect library ID from a wrong base URL.
+            try:
+                libraries = self.request("GET", "/api/v1/libraries")
+            except ApiError as listing_error:
+                if listing_error.code == "KOMGA_NOT_FOUND":
+                    raise ApiError("KOMGA_API_NOT_FOUND") from listing_error
+                raise
+            if not isinstance(libraries, list):
+                raise ApiError("KOMGA_PROTOCOL")
+            raise ApiError("KOMGA_LIBRARY_NOT_FOUND") from exc
         if not isinstance(library, dict) or not isinstance(library.get("root"), str):
             raise ApiError("KOMGA_PROTOCOL")
         if self.file_path(library["root"]) != str(self.root):

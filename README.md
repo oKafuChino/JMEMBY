@@ -84,6 +84,14 @@ docker compose up -d app
 
 ## 运维
 
+如果 Komga 日志出现 `SQLITE_CANTOPEN`，可先修复服务数据目录权限：
+
+```bash
+bash repair.sh
+```
+
+该命令停止两个服务，仅修复 `data/app`、`data/komga` 的 UID/GID 和所有者读写权限，然后启动 Komga；不会删除数据库或更改漫画文件。检查 Komga 页面和日志恢复正常后，再执行 `bash install.sh`。若错误仍存在，需要检查数据库自定义路径、磁盘空间和文件系统是否只读；权限修复不能解决这些问题。
+
 在 VPS 项目目录执行更新命令：
 
 ```bash

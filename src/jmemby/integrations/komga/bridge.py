@@ -12,6 +12,8 @@ class KomgaBridge(CommandProvider):
             "KOMGA_AUTH": "Komga 登录失败（HTTP 401），请检查管理员邮箱和密码。",
             "KOMGA_FORBIDDEN": "Komga 拒绝访问（HTTP 403），请使用有权限的管理员账户。",
             "KOMGA_NOT_FOUND": "Komga 接口或漫画库不存在（HTTP 404），请检查 KOMGA_BASE_URL 和 KOMGA_LIBRARY_ID。",
+            "KOMGA_LIBRARY_NOT_FOUND": "Komga 漫画库列表可访问，但指定库 ID 无效。请先在网页创建 /data 漫画库，再填写该库的 ID（不是库名称）。",
+            "KOMGA_API_NOT_FOUND": "Komga 漫画库 API 返回 404，请将容器地址设为 http://komga:25600；若配置了服务路径前缀，需一并填写。",
             "KOMGA_ROOT_MISMATCH": "漫画库根目录不匹配，请在 Komga 中将目标库根目录设为 /data，并核对 KOMGA_LIBRARY_ROOT。",
             "KOMGA_PROTOCOL": "Komga 返回格式不符合预期，请检查服务地址及版本兼容性。",
             "KOMGA_HTTP": "Komga 返回非预期 HTTP 状态，请检查服务地址和反向代理。",
