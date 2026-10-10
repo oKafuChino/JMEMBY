@@ -1,0 +1,267 @@
+import asyncio
+from dataclasses import replace
+import io
+import json
+import os
+from pathlib import Path
+import sqlite3
+import sys
+import tempfile
+import time
+import unittest
+from unittest.mock import patch
+import zipfile
+
+from PIL import Image
+
+from jmemby.config import Settings
+from jmemby.db.store import Store
+from jmemby.domain.errors import JobError
+from jmemby.domain.models import Chapter, Manga, Page
+from jmemby.providers.command import CommandProvider
+from jmemby.providers.reference import parse_reference
+from jmemby.runtime import backup_database, instance_lock
+from jmemby.storage.cbz import contained, create_cbz, safe_component, validate_cbz
+from jmemby.workers.queue import Worker
+
+
+def png():
+    stream = io.BytesIO()
+    Image.new("RGB", (8, 8), "white").save(stream, "PNG")
+    return stream.getvalue()
+
+
+def manga():
+    return Manga("jmcomic", "42", "A & <B>", ("Writer",), (Chapter("52", 1, "Chapter", ()),))
+
+
+class FakeProvider:
+    def __init__(self):
+        self.downloads = 0
+        self.block = False
+        self.started = asyncio.Event()
+        self.stopped = asyncio.Event()
+
+    async def get_pages(self, chapter_id):
+        return (Page(1, "fixture:1"), Page(2, "fixture:2"))
+
+    async def download(self, page, destination, max_bytes):
+        self.downloads += 1
+        self.started.set()
+        try:
+            if self.block:
+                await asyncio.sleep(60)
+            destination.write_bytes(png())
+        finally:
+            self.stopped.set()
+
+
+class FakeKomga:
+    def __init__(self):
+        self.fail = False
+        self.calls = 0
+
+    async def import_paths(self, paths):
+        self.calls += 1
+        if self.fail:
+            raise JobError("NETWORK", "暂时不可用", True)
+        return {p: str(i) for i, p in enumerate(paths)}
+
+
+class CoreTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.store = Store(self.root / "app.db")
+        self.provider = FakeProvider()
+        self.komga = FakeKomga()
+        self.settings = Settings("secret", frozenset({1}), "", str(self.root / "storage"), "", "", "", "/data",
+                                 min_free_space_gb=0, resume_free_space_gb=1)
+        self.worker = Worker(self.store, self.provider, self.komga, self.settings)
+
+    def tearDown(self):
+        self.store.close()
+        self.temp.cleanup()
+
+    def submit(self):
+        return self.store.submit(manga(), 1, 1)
+
+    async def test_end_to_end_generated_images_and_duplicate_submission(self):
+        task = self.submit()
+        self.assertEqual(task["id"], self.submit()["id"])
+        await self.worker.run_once()
+        self.assertEqual(self.store.get(task["id"])["status"], "COMPLETED")
+        record = self.store.chapters(task["id"])[0]
+        path = self.worker.library / record["path"]
+        with zipfile.ZipFile(path) as archive:
+            self.assertEqual(archive.namelist()[:2], ["000001.png", "000002.png"])
+            self.assertIn("A &amp; &lt;B&gt;", archive.read("ComicInfo.xml").decode())
+        second = self.submit()
+        await self.worker.run_once()
+        self.assertEqual(self.provider.downloads, 2)
+        self.assertEqual(self.store.get(second["id"])["status"], "COMPLETED")
+        self.assertEqual(len(self.store.notifications()), 2)
+
+    async def test_import_failure_reuses_artifact(self):
+        task = self.submit()
+        self.komga.fail = True
+        await self.worker.run_once()
+        self.assertEqual(self.store.get(task["id"])["status"], "RETRY_WAIT")
+        self.assertIn("文件已保存", self.store.get(task["id"])["error"])
+        self.komga.fail = False
+        self.store.update(task["id"], next_at=0)
+        await self.worker.run_once()
+        self.assertEqual(self.provider.downloads, 2)
+        self.assertEqual(self.store.get(task["id"])["status"], "COMPLETED")
+
+    async def test_cancel_stops_running_operation(self):
+        task = self.submit()
+        self.provider.block = True
+        running = asyncio.create_task(self.worker.run_once())
+        await self.provider.started.wait()
+        self.store.request_cancel(task["id"], 1)
+        await asyncio.wait_for(running, 3)
+        self.assertTrue(self.provider.stopped.is_set())
+        self.assertEqual(self.store.get(task["id"])["status"], "CANCELLED")
+        self.assertFalse(list(self.worker.library.rglob("*.cbz")))
+
+    async def test_queued_cancel_does_not_download(self):
+        task = self.submit()
+        self.store.request_cancel(task["id"], 1)
+        await self.worker.run_once()
+        self.assertEqual(self.provider.downloads, 0)
+        self.assertEqual(self.store.get(task["id"])["status"], "CANCELLED")
+
+    async def test_recovery_after_publication_before_db_commit(self):
+        task = self.submit()
+        record = self.store.chapters(task["id"])[0]
+        pages = await self.provider.get_pages("52")
+        chapter = replace(manga().chapters[0], pages=pages)
+        from dataclasses import asdict
+        self.store.update_chapter(record["id"], pages=json.dumps([asdict(p) for p in pages]))
+        staging = self.root / "stage"
+        staging.mkdir()
+        for p in pages:
+            (staging / f"{p.number:06d}.png").write_bytes(png())
+        create_cbz(staging, self.worker.library / record["path"], manga(), chapter)
+        self.store.update(task["id"], status="PACKAGING")
+        self.store.recover()
+        await self.worker.run_once()
+        self.assertEqual(self.provider.downloads, 0)
+        self.assertEqual(self.store.get(task["id"])["status"], "COMPLETED")
+
+    async def test_disk_pause_and_resume(self):
+        task = self.submit()
+        self.worker.settings = replace(self.settings, min_free_space_gb=1, resume_free_space_gb=2)
+        usage = type("Usage", (), {"free": 0})()
+        with patch("jmemby.workers.queue.shutil.disk_usage", return_value=usage):
+            await self.worker.run_once()
+        self.assertEqual(self.store.get(task["id"])["status"], "PAUSED_DISK")
+        usage.free = 3 * 1024**3
+        with patch("jmemby.workers.queue.shutil.disk_usage", return_value=usage):
+            await self.worker.run_once()
+        self.assertEqual(self.store.get(task["id"])["status"], "COMPLETED")
+
+    async def test_corrupt_existing_file_never_overwritten(self):
+        task = self.submit()
+        record = self.store.chapters(task["id"])[0]
+        target = self.worker.library / record["path"]
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"user data")
+        await self.worker.run_once()
+        self.assertEqual(target.read_bytes(), b"user data")
+        self.assertEqual(self.store.get(task["id"])["status"], "FAILED")
+
+    async def test_confirmation_binding_expiry_and_idempotence(self):
+        token = self.store.confirmation(manga(), 1, 1)
+        with self.assertRaises(ValueError):
+            self.store.confirm(token, 2)
+        first = self.store.confirm(token, 1)
+        self.assertEqual(first["id"], self.store.confirm(token, 1)["id"])
+        other = self.store.confirmation(manga(), 1, 1)
+        self.store.connection.execute("UPDATE confirmations SET expires=0 WHERE token=?", (other,))
+        with self.assertRaises(ValueError):
+            self.store.confirm(other, 1)
+
+    async def test_retry_limit_and_atomic_notification(self):
+        task = self.submit()
+        self.komga.fail = True
+        for _ in range(3):
+            self.store.update(task["id"], next_at=0)
+            await self.worker.run_once()
+        self.assertEqual(self.store.get(task["id"])["status"], "FAILED")
+        self.assertEqual(len(self.store.notifications()), 1)
+        self.assertEqual(self.provider.downloads, 2)
+
+    def test_database_unique_constraint_across_connections(self):
+        first = self.submit()
+        second = Store(self.root / "app.db")
+        try:
+            self.assertEqual(second.submit(manga(), 1, 1)["id"], first["id"])
+        finally:
+            second.close()
+
+    def test_backup_and_future_schema(self):
+        self.submit()
+        destination = self.root / "backup.db"
+        backup_database(self.root / "app.db", destination)
+        restored = Store(destination)
+        self.assertEqual(len(restored.tasks()), 1)
+        restored.close()
+        with sqlite3.connect(destination) as db:
+            db.execute("PRAGMA user_version=99")
+        db.close()
+        with self.assertRaises(RuntimeError):
+            Store(destination)
+
+    def test_paths_and_references(self):
+        for value in ("https://evil.test/album/1", "http://source.test/album/1", "abc", "0"):
+            with self.assertRaises(ValueError):
+                parse_reference(value, ("source.test",))
+        self.assertEqual(parse_reference("https://source.test/album/42", ("source.test",)), "42")
+        with self.assertRaises(JobError):
+            contained(self.root, "../escape")
+        self.assertNotEqual(safe_component(".."), "..")
+        self.assertEqual(safe_component("CON"), "_CON")
+
+    def test_single_instance_lock(self):
+        with instance_lock(self.root / "lock"):
+            with self.assertRaises(RuntimeError):
+                with instance_lock(self.root / "lock"):
+                    pass
+
+    async def test_bad_image_is_not_published(self):
+        task = self.submit()
+        async def bad_download(page, destination, max_bytes):
+            destination.write_bytes(b"not an image")
+        self.provider.download = bad_download
+        await self.worker.run_once()
+        self.assertEqual(self.store.get(task["id"])["status"], "RETRY_WAIT")
+        self.assertFalse(list(self.worker.library.rglob("*.cbz")))
+
+    async def test_task_size_limit(self):
+        task = self.submit()
+        self.worker.settings = replace(self.settings, max_task_bytes=1)
+        await self.worker.run_once()
+        self.assertEqual(self.store.get(task["id"])["status"], "FAILED")
+        self.assertFalse(list(self.worker.library.rglob("*.cbz")))
+
+    def test_config_redacts_secret_and_rejects_empty_whitelist(self):
+        self.assertNotIn("secret", repr(self.settings))
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "secret", "TELEGRAM_ALLOWED_USER_IDS": ""}):
+            with self.assertRaises(ValueError):
+                Settings.from_env()
+
+    async def test_process_bridge_cancel_and_protocol(self):
+        bridge = CommandProvider(json.dumps([sys.executable, "-c", "import json,sys; json.load(sys.stdin); print('{}')"]))
+        self.assertEqual(await bridge.request({"operation": "ping"}), {})
+        slow = CommandProvider(json.dumps([sys.executable, "-c", "import time; time.sleep(60)"]))
+        task = asyncio.create_task(slow.request({}))
+        await asyncio.sleep(.2)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 3)
+
+
+if __name__ == "__main__":
+    unittest.main()

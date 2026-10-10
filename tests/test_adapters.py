@@ -1,0 +1,107 @@
+import importlib.util
+import io
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+from urllib.error import HTTPError
+
+from jmemby.integrations.komga.adapter import ApiError, KomgaAPI
+from jmemby.providers.jm_adapter import handle
+
+
+class Photo:
+    id, name = "52", "第一章"
+    def __len__(self):
+        return 2
+    def __getitem__(self, index):
+        return ("image0", "image1")[index]
+
+
+class SDK:
+    def get_album_detail(self, album_id):
+        class Album(list):
+            name, authors = "漫画", ["作者"]
+        return Album([Photo()])
+    def get_photo_detail(self, photo_id):
+        return Photo()
+    def download_by_image_detail(self, image, path):
+        self.image = image
+        Path(path).write_bytes(b"decoded")
+
+
+class AdapterTests(unittest.TestCase):
+    def test_sdk_metadata_and_stable_pages(self):
+        client = SDK()
+        self.assertEqual(handle({"operation": "metadata", "id": "42"}, client)["chapters"], [{"id": "52", "title": "第一章"}])
+        self.assertEqual(handle({"operation": "pages", "chapter_id": "52"}, client)["pages"], ["jm:52:0", "jm:52:1"])
+
+    def test_sdk_decoder_and_size_limit(self):
+        with tempfile.TemporaryDirectory() as root:
+            destination = Path(root) / "image.part"
+            client = SDK()
+            request = {"operation": "download", "url": "jm:52:1", "destination": str(destination), "max_bytes": 30}
+            self.assertEqual(handle(request, client), {})
+            self.assertEqual(client.image, "image1")
+            self.assertEqual(destination.read_bytes(), b"decoded")
+            destination.unlink()
+            request["max_bytes"] = 1
+            self.assertEqual(handle(request, client)["error"]["code"], "SIZE_LIMIT")
+            self.assertFalse(destination.exists())
+            self.assertFalse(list(Path(root).glob("*.jpg")))
+
+    def test_komga_pages_and_exact_library_path(self):
+        api = KomgaAPI("http://komga:25600", "user", "secret", "lib")
+        calls = []
+        def request(method, path, query=None):
+            calls.append((method, path, query))
+            if path == "/api/v1/libraries/lib":
+                return {"root": "file:///data"}
+            if method == "POST":
+                return None
+            if query["page"] == 0:
+                return {"content": [{"id": "wrong", "url": "/data/A/B.cbz", "libraryId": "other"}], "totalPages": 2}
+            return {"content": [{"id": "book", "url": "file:///data/A/B.cbz", "libraryId": "lib"}], "last": True}
+        api.request = request
+        self.assertEqual(api.import_paths(["A/B.cbz"]), {"books": {"A/B.cbz": "book"}})
+        self.assertEqual(calls[-1][2]["page"], 1)
+
+    def test_komga_rejects_root_mismatch_and_traversal(self):
+        api = KomgaAPI("http://komga:25600", "user", "secret", "lib")
+        api.request = lambda *args: {"root": "/different"}
+        with self.assertRaises(ApiError):
+            api.check_library()
+        for path in ("../x.cbz", "/absolute.cbz", "a\\b.cbz"):
+            with self.assertRaises(ValueError):
+                api.expected_paths([path])
+
+    def test_komga_scan_acceptance_is_not_completion(self):
+        api = KomgaAPI("http://komga:25600", "user", "secret", "lib", timeout=0)
+        api.request = lambda method, path: {"root": "/data"} if method == "GET" else None
+        with self.assertRaises(ApiError):
+            api.import_paths(["A/B.cbz"])
+
+    def test_komga_http_errors_and_no_secret_in_error(self):
+        api = KomgaAPI("http://komga:25600", "user", "secret", "lib")
+        for status, expected in ((401, "KOMGA_AUTH"), (429, "RATE_LIMIT"), (503, "SERVER_ERROR")):
+            error = HTTPError("http://komga", status, "secret", {"Retry-After": "40"}, io.BytesIO())
+            with patch.object(api.opener, "open", side_effect=error):
+                with self.assertRaises(ApiError) as caught:
+                    api.request("GET", "/api/v1/books")
+            self.assertEqual(caught.exception.code, expected)
+            self.assertNotIn("secret", str(caught.exception))
+            if status == 429:
+                self.assertEqual(caught.exception.retry_after, 40)
+
+    def test_installer_config_roundtrip(self):
+        spec = importlib.util.spec_from_file_location("configure", Path(__file__).parents[1] / "scripts/configure.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        value = "a$B# spaces'and\\slashes"
+        self.assertEqual(module.parse("KEY=" + module.encode(value))["KEY"], value)
+        with self.assertRaises(ValueError):
+            module.encode("bad\nvalue")
+
+
+if __name__ == "__main__":
+    unittest.main()
