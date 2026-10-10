@@ -38,7 +38,6 @@ services:
       - 127.0.0.1:25600:25600
     restart: unless-stopped
     mem_limit: 2g
-    cpus: 2.0
     logging:
       driver: json-file
       options:
