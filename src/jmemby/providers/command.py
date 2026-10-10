@@ -24,6 +24,7 @@ class CommandProvider:
             "JM_NOT_FOUND": "数据源未找到内容或接口，请核对漫画 ID 和 API 域名。",
             "JM_SDK_INCOMPATIBLE": "JMComic SDK 接口不兼容或依赖缺失，请查看 provider_error 日志。",
             "JM_CONFIG_ERROR": "JMComic 客户端初始化失败，请查看 provider_error 日志。",
+            "JM_RESPONSE_UNEXPECTED": "禁漫返回了 SDK 不接受的响应，请稍后重试；若持续发生，请检查 API 域名及 provider_error 日志。",
             "JM_CLIENT_ERROR": "JMComic 请求失败，请查看 provider_error 日志中的阶段和异常类型。",
         }.get(code, "数据源请求失败，请查看 provider_error 日志。")
 
@@ -70,7 +71,7 @@ class CommandProvider:
                         safe[key] = [str(v)[:120] for v in values[:6]
                                      if v is not None and re.fullmatch(r"[\w.:-]{1,120}", str(v))]
                 logging.getLogger(__name__).warning("provider_error code=%s diagnostic=%s", code, json.dumps(safe))
-                retryable = code in {"TIMEOUT", "RATE_LIMIT", "NETWORK", "SERVER_ERROR"}
+                retryable = code in {"TIMEOUT", "RATE_LIMIT", "NETWORK", "SERVER_ERROR", "JM_RESPONSE_UNEXPECTED"}
                 raise JobError(code, f"[{code}] {self.error_message(code)}", retryable,
                                min(max(float(error.get("retry_after", 0)), 0), 86400))
             return result

@@ -10,7 +10,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 from jmemby.integrations.komga.adapter import ApiError, KomgaAPI
-from jmemby.providers.jm_adapter import handle, classify_error
+from jmemby.providers.jm_adapter import handle, classify_error, initialize_client
 from jmemby.integrations.komga.bridge import KomgaBridge
 from jmemby.domain.errors import JobError
 
@@ -36,6 +36,24 @@ class SDK:
 
 
 class AdapterTests(unittest.TestCase):
+    def test_initialization_unexpected_response_retries_and_recovers(self):
+        class ResponseUnexpectedException(Exception):
+            pass
+        error = ResponseUnexpectedException("secret response")
+        error.__context__ = AssertionError("secret")
+        self.assertEqual(classify_error(error, "client_init")["error"]["code"], "JM_RESPONSE_UNEXPECTED")
+        client = object()
+        with patch("jmemby.providers.jm_adapter.make_client", side_effect=[error, client]) as factory, patch("jmemby.providers.jm_adapter.time.sleep"):
+            self.assertIs(initialize_client(), client)
+            self.assertEqual(factory.call_count, 2)
+
+    def test_initialization_retry_is_bounded_and_config_errors_not_retried(self):
+        for error, attempts in ((ConnectionError("offline"), 3), (ValueError("config"), 1)):
+            with patch("jmemby.providers.jm_adapter.make_client", side_effect=error) as factory, patch("jmemby.providers.jm_adapter.time.sleep"):
+                with self.assertRaises(type(error)):
+                    initialize_client()
+                self.assertEqual(factory.call_count, attempts)
+
     def test_source_error_classification_and_redaction(self):
         for error, expected in ((TimeoutError("secret-url"), "TIMEOUT"),
                                 (AttributeError("secret-cookie"), "JM_SDK_INCOMPATIBLE"),

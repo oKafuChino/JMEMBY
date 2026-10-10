@@ -7,6 +7,7 @@ import re
 import sys
 from importlib.metadata import PackageNotFoundError, version
 import traceback
+import time
 
 
 def classify_error(exc, phase):
@@ -35,6 +36,8 @@ def classify_error(exc, phase):
         code = "JM_SDK_INCOMPATIBLE"
     elif "missing" in lower:
         code = "JM_NOT_FOUND"
+    elif "responseunexpectedexception" in lower:
+        code = "JM_RESPONSE_UNEXPECTED"
     elif phase == "client_init":
         code = "JM_CONFIG_ERROR"
     else:
@@ -59,6 +62,23 @@ def make_client():
     if domains:
         options["client"]["domain"] = domains
     return JmOption.construct(options).new_jm_client()
+
+
+def initialize_client():
+    """Retry only client construction, never replay a successful download.
+
+    The SDK's internal retries remain disabled. Initialization has at most three
+    attempts per process; the parent operation timeout still bounds total time.
+    Auth errors, missing content and invalid configuration are not retried here.
+    """
+    for attempt in range(3):
+        try:
+            return make_client()
+        except Exception as exc:
+            code = classify_error(exc, "client_init")["error"]["code"]
+            if attempt == 2 or code not in {"TIMEOUT", "NETWORK", "SERVER_ERROR", "JM_RESPONSE_UNEXPECTED"}:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def handle(request, client):
@@ -101,7 +121,7 @@ def main():
         request = json.loads(sys.stdin.readline())
         phase = "client_init"
         with redirect_stdout(sys.stderr):
-            client = make_client()
+            client = initialize_client()
             phase = request.get("operation", "unknown")
             result = handle(request, client)
     except Exception as exc:

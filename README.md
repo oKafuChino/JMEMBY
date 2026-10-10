@@ -93,6 +93,8 @@ docker compose logs --tail 100 app
 
 检查输出中的错误代码和 `provider_error` 日志。诊断包含 SDK 版本、失败阶段及异常类型，不包含原始 SDK 响应或凭据。`JM_API_DOMAINS` 仅在确认默认 API 域名不可达后配置为可用的 API 主机名，不应填漫画网页 URL。
 
+如果元数据检查成功，但 Bot 偶发在 `client_init` 阶段报 `ResponseUnexpectedException`，表示初始化请求返回了 SDK 不接受的响应，并不能据此判定配置错误。客户端初始化对网络/超时/异常响应最多尝试 3 次（等待 1、2 秒），父进程超时仍有效；队列任务失败后还受任务总重试次数限制。持续失败时应继续检查数据源可达性或 SDK 兼容性，而非无限重试。
+
 如果 Komga 日志出现 `SQLITE_CANTOPEN`，可先修复服务数据目录权限：
 
 ```bash
