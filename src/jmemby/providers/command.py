@@ -12,6 +12,9 @@ from jmemby.domain.models import Chapter, Manga, Page
 class CommandProvider:
     source = "jmcomic"
 
+    def error_message(self, code):
+        return "数据源请求失败，请检查配置或稍后重试"
+
     def __init__(self, command: str, timeout: int = 300):
         self.argv = json.loads(command)
         if not isinstance(self.argv, list) or not self.argv or not all(isinstance(x, str) for x in self.argv):
@@ -45,7 +48,7 @@ class CommandProvider:
                 error = result["error"]
                 code = error.get("code", "PROVIDER_FAILED")
                 retryable = code in {"TIMEOUT", "RATE_LIMIT", "NETWORK", "SERVER_ERROR"}
-                raise JobError(code, "数据源请求失败，请检查配置或稍后重试", retryable,
+                raise JobError(code, self.error_message(code), retryable,
                                min(max(float(error.get("retry_after", 0)), 0), 86400))
             return result
         except TimeoutError as exc:

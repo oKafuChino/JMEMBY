@@ -44,7 +44,16 @@ python3 scripts/configure.py komga
 "${SUDO[@]}" docker compose config --quiet
 "${SUDO[@]}" docker compose build app
 "${SUDO[@]}" docker compose run --rm app check-config
-"${SUDO[@]}" docker compose run --rm app check-integrations
+until "${SUDO[@]}" docker compose run --rm app check-integrations; do
+  echo 'Komga 检查失败，具体原因见上方错误代码。配置和数据已保留。'
+  echo '可另开终端查看：sudo docker compose logs --tail 100 komga'
+  read -r -p '输入 e 修改配置、r 等待服务就绪后重试，其他输入退出：' retry_action
+  case "$retry_action" in
+    e|E) python3 scripts/configure.py komga; "${SUDO[@]}" docker compose config --quiet ;;
+    r|R) ;;
+    *) exit 1 ;;
+  esac
+done
 "${SUDO[@]}" docker compose up -d app
 "${SUDO[@]}" docker compose ps
 echo '部署命令已完成。请用 Telegram 提交一个小漫画验收真实下载和入库。'

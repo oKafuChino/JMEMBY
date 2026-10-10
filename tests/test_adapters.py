@@ -1,13 +1,18 @@
 import importlib.util
+import asyncio
 import io
 from pathlib import Path
 import tempfile
+import json
+import sys
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 
 from jmemby.integrations.komga.adapter import ApiError, KomgaAPI
 from jmemby.providers.jm_adapter import handle
+from jmemby.integrations.komga.bridge import KomgaBridge
+from jmemby.domain.errors import JobError
 
 
 class Photo:
@@ -83,7 +88,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_komga_http_errors_and_no_secret_in_error(self):
         api = KomgaAPI("http://komga:25600", "user", "secret", "lib")
-        for status, expected in ((401, "KOMGA_AUTH"), (429, "RATE_LIMIT"), (503, "SERVER_ERROR")):
+        for status, expected in ((401, "KOMGA_AUTH"), (403, "KOMGA_FORBIDDEN"), (404, "KOMGA_NOT_FOUND"), (429, "RATE_LIMIT"), (503, "SERVER_ERROR")):
             error = HTTPError("http://komga", status, "secret", {"Retry-After": "40"}, io.BytesIO())
             with patch.object(api.opener, "open", side_effect=error):
                 with self.assertRaises(ApiError) as caught:
@@ -101,6 +106,21 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(module.parse("KEY=" + module.encode(value))["KEY"], value)
         with self.assertRaises(ValueError):
             module.encode("bad\nvalue")
+
+    def test_komga_bridge_preserves_actionable_error(self):
+        command = json.dumps([sys.executable, "-c", "print('{\"error\":{\"code\":\"KOMGA_AUTH\"}}')"])
+        with self.assertRaises(JobError) as caught:
+            asyncio.run(KomgaBridge(command).request({"operation": "check"}))
+        self.assertEqual(caught.exception.code, "KOMGA_AUTH")
+        self.assertIn("401", str(caught.exception))
+        self.assertIn("密码", str(caught.exception))
+
+    def test_missing_library_root_is_protocol_error(self):
+        api = KomgaAPI("http://komga:25600", "user", "secret", "lib")
+        api.request = lambda *args: {"unexpected": "response"}
+        with self.assertRaises(ApiError) as caught:
+            api.check_library()
+        self.assertEqual(caught.exception.code, "KOMGA_PROTOCOL")
 
 
 if __name__ == "__main__":

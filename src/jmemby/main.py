@@ -8,6 +8,7 @@ from pathlib import Path
 import time
 
 from jmemby.config import Settings
+from jmemby.domain.errors import JobError
 from jmemby.db.store import Store
 from jmemby.integrations.komga.bridge import KomgaBridge
 from jmemby.providers.command import CommandProvider
@@ -89,6 +90,8 @@ def main():
             return
         with instance_lock(db_path.parent / "instance.lock"):
             asyncio.run(run(settings, db_path))
+    except JobError as exc:
+        parser.exit(2, f"检查失败 [{exc.code}]：{exc}\n")
     except (ValueError, RuntimeError) as exc:
         parser.exit(2, f"Startup failed: {exc}\n")
 

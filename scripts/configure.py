@@ -43,7 +43,7 @@ def save(values):
 
 def ask(label, default="", secret=False):
     prompt = label + ("（留空保留）" if default else "") + ": "
-    value = (getpass.getpass(prompt) if secret else input(prompt)).strip()
+    value = getpass.getpass(prompt) if secret else input(prompt).strip()
     value = value or default
     if not value:
         raise ValueError(f"{label}不能为空")
@@ -71,6 +71,7 @@ def main():
         values["KOMGA_IMAGE"] = "gotson/komga:latest"
         values["KOMGA_PUBLIC_URL"] = ask("Komga 阅读入口", "http://localhost:25600")
     elif action == "komga":
+        values["KOMGA_BASE_URL"] = ask("Komga 容器访问地址", values.get("KOMGA_BASE_URL") or "http://komga:25600")
         values["KOMGA_USERNAME"] = ask("Komga 管理员邮箱", values.get("KOMGA_USERNAME", ""))
         values["KOMGA_PASSWORD"] = ask("Komga 管理员密码", values.get("KOMGA_PASSWORD", ""), True)
         old = values.get("KOMGA_LIBRARY_ID", "")

@@ -84,6 +84,16 @@ docker compose up -d app
 
 ## 运维
 
+在 VPS 项目目录执行更新命令：
+
+```bash
+bash update.sh
+```
+
+脚本使用 `git pull --ff-only` 拉取当前分支代码，拉取 Komga 镜像并重建 Bot。镜像准备完成后停止两个服务，备份 `.env`、Bot 数据库和 Komga 配置到 `data/backups/时间戳/`，再启动 Komga、检查连接并启动 Bot。保留原配置与漫画文件，不重新询问 Token。默认 Komga 使用最新镜像。
+
+本地代码有改动时会停止，不自动覆盖。首次获取更新脚本可执行 `git pull --ff-only && bash update.sh`。更新需要短暂停机；若 Komga 检查失败，Bot 保持停止，修复后重跑更新命令。备份包含凭据，应妥善保管；不自动回滚数据库，也不自动清理历史备份。
+
 ```bash
 docker compose logs --tail 100 app
 docker compose ps

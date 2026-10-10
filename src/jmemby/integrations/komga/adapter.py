@@ -56,7 +56,8 @@ class KomgaAPI:
                     except (ValueError, TypeError):
                         delay = 30
                 raise ApiError("RATE_LIMIT", max(0, min(delay, 86400))) from exc
-            raise ApiError("SERVER_ERROR" if exc.code >= 500 else "KOMGA_AUTH" if exc.code in (401, 403) else "KOMGA_HTTP") from exc
+            code = {401: "KOMGA_AUTH", 403: "KOMGA_FORBIDDEN", 404: "KOMGA_NOT_FOUND"}.get(exc.code)
+            raise ApiError(code or ("SERVER_ERROR" if exc.code >= 500 else "KOMGA_HTTP")) from exc
         except (URLError, TimeoutError) as exc:
             raise ApiError("NETWORK") from exc
 
@@ -85,7 +86,9 @@ class KomgaAPI:
 
     def check_library(self):
         library = self.request("GET", f"/api/v1/libraries/{quote(self.library_id, safe='')}")
-        if not isinstance(library, dict) or self.file_path(library.get("root")) != str(self.root):
+        if not isinstance(library, dict) or not isinstance(library.get("root"), str):
+            raise ApiError("KOMGA_PROTOCOL")
+        if self.file_path(library["root"]) != str(self.root):
             raise ApiError("KOMGA_ROOT_MISMATCH")
         return {"library_id": self.library_id, "root": str(self.root)}
 
