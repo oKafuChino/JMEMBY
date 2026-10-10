@@ -10,7 +10,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 from jmemby.integrations.komga.adapter import ApiError, KomgaAPI
-from jmemby.providers.jm_adapter import handle, classify_error, initialize_client
+from jmemby.providers.jm_adapter import handle, classify_error, initialize_client, StageError
 from jmemby.integrations.komga.bridge import KomgaBridge
 from jmemby.domain.errors import JobError
 
@@ -36,6 +36,23 @@ class SDK:
 
 
 class AdapterTests(unittest.TestCase):
+    def test_download_error_identifies_refresh_or_image_stage(self):
+        class ResponseUnexpectedException(Exception):
+            pass
+        request = {"operation": "download", "url": "jm:52:1", "max_bytes": 30}
+        with tempfile.TemporaryDirectory() as directory:
+            request["destination"] = str(Path(directory) / "image.part")
+            for method, phase in (("get_photo_detail", "download_photo_refresh"),
+                                  ("download_by_image_detail", "image_download_decode")):
+                client = SDK()
+                with patch.object(client, method, side_effect=ResponseUnexpectedException("secret body")):
+                    with self.assertRaises(StageError) as caught:
+                        handle(request, client)
+                result = classify_error(caught.exception, "download")
+                self.assertEqual(result["error"]["diagnostic"]["phase"], phase)
+                self.assertEqual(result["error"]["code"], "JM_RESPONSE_UNEXPECTED")
+                self.assertNotIn("secret body", json.dumps(result))
+
     def test_initialization_unexpected_response_retries_and_recovers(self):
         class ResponseUnexpectedException(Exception):
             pass

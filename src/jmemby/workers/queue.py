@@ -126,7 +126,11 @@ class Worker:
                                 candidates[0].unlink()
                         if existing is None:
                             partial = stage / f"{page.number:06d}.part"
-                            await self.guarded(task_id, self.provider.download(page, partial, self.settings.max_page_bytes))
+                            try:
+                                await self.guarded(task_id, self.provider.download(page, partial, self.settings.max_page_bytes))
+                            except JobError as exc:
+                                logger.warning("page_failure task=%s chapter=%s page=%s code=%s", task_id, record["id"], page.number, exc.code)
+                                raise
                             extension = validate_image(partial, self.settings.max_page_bytes, self.settings.max_pixels)
                             existing = stage / f"{page.number:06d}{extension}"
                             partial.replace(existing)

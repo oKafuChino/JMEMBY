@@ -10,8 +10,23 @@ import traceback
 import time
 
 
+class StageError(Exception):
+    def __init__(self, phase):
+        self.phase = phase
+
+
+def at_stage(phase, operation, *args):
+    try:
+        return operation(*args)
+    except Exception as exc:
+        raise StageError(phase) from exc
+
+
 def classify_error(exc, phase):
     """Return diagnostic structure without SDK messages, URLs or credentials."""
+    if isinstance(exc, StageError):
+        phase = exc.phase
+        exc = exc.__cause__ or exc
     chain, current = [], exc
     while current is not None and len(chain) < 6 and current not in chain:
         chain.append(current)
@@ -84,19 +99,19 @@ def initialize_client():
 def handle(request, client):
     operation = request["operation"]
     if operation == "metadata":
-        album = client.get_album_detail(request["id"])
+        album = at_stage("album_metadata", client.get_album_detail, request["id"])
         return {"title": album.name, "authors": list(album.authors),
                 "chapters": [{"id": str(photo.id), "title": photo.name} for photo in album]}
     if operation == "pages":
-        photo = client.get_photo_detail(request["chapter_id"])
+        photo = at_stage("chapter_pages", client.get_photo_detail, request["chapter_id"])
         return {"pages": [f"jm:{photo.id}:{index}" for index in range(len(photo))]}
     if operation == "download":
         match = re.fullmatch(r"jm:([0-9]+):([0-9]+)", request["url"])
         if not match:
             raise ValueError("Invalid page reference")
         # Resolve fresh signed/CDN URLs for every attempt rather than persisting URLs.
-        photo = client.get_photo_detail(match[1])
-        image = photo[int(match[2])]
+        photo = at_stage("download_photo_refresh", client.get_photo_detail, match[1])
+        image = at_stage("download_image_detail", photo.__getitem__, int(match[2]))
         destination = Path(request["destination"])
         limit = int(request["max_bytes"])
         if limit <= 0:
@@ -105,7 +120,7 @@ def handle(request, client):
         # Pillow-based SDK decoders may infer output format from the path.
         decoded = destination.with_suffix(".decoded.jpg")
         try:
-            client.download_by_image_detail(image, str(decoded))
+            at_stage("image_download_decode", client.download_by_image_detail, image, str(decoded))
             if not decoded.is_file() or not 0 < decoded.stat().st_size <= limit:
                 return {"error": {"code": "SIZE_LIMIT"}}
             decoded.replace(destination)
