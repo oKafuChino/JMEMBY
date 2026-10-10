@@ -54,7 +54,8 @@ def create_dispatcher(service, settings):
                 await message.answer(settings.komga_public_url or "尚未配置访问地址")
             elif command == "/disk":
                 free = shutil.disk_usage(settings.storage_root).free / 1024**3
-                await message.answer(f"剩余 {free:.1f} GiB；暂停阈值 {settings.min_free_space_gb} GiB")
+                policy = f"暂停阈值 {settings.min_free_space_gb} GiB" if settings.disk_space_check_enabled else "磁盘空间阈值检查已关闭"
+                await message.answer(f"剩余 {free:.1f} GiB；{policy}")
             elif command == "/queue":
                 page = max(0, int(argument or "1") - 1)
                 tasks = service.store.tasks(user_id, page)

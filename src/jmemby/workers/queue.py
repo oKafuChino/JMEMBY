@@ -30,7 +30,7 @@ class Worker:
         self.heartbeat = time.monotonic()
         if self.store.get(task_id)["cancel_requested"]:
             raise Cancelled()
-        if shutil.disk_usage(self.root).free < self.settings.min_free_space_gb * 1024**3:
+        if self.settings.disk_space_check_enabled and shutil.disk_usage(self.root).free < self.settings.min_free_space_gb * 1024**3:
             raise DiskLow()
 
     async def guarded(self, task_id, awaitable):
@@ -48,7 +48,7 @@ class Worker:
 
     async def run_once(self):
         self.heartbeat = time.monotonic()
-        if shutil.disk_usage(self.root).free >= self.settings.resume_free_space_gb * 1024**3:
+        if not self.settings.disk_space_check_enabled or shutil.disk_usage(self.root).free >= self.settings.resume_free_space_gb * 1024**3:
             self.store.resume_disk()
         task = self.store.next_task()
         if task is None:
@@ -73,7 +73,10 @@ class Worker:
                 self.store.finish(task["id"], "FAILED", exc.code, message)
         except OSError as exc:
             if exc.errno == errno.ENOSPC:
-                self.store.update(task["id"], status="PAUSED_DISK", error_code="DISK_LOW", error="磁盘已满")
+                if self.settings.disk_space_check_enabled:
+                    self.store.update(task["id"], status="PAUSED_DISK", error_code="DISK_LOW", error="磁盘已满")
+                else:
+                    self.store.finish(task["id"], "FAILED", "DISK_FULL", "磁盘已满，释放空间后可手动重试")
             else:
                 self.store.finish(task["id"], "FAILED", "FILESYSTEM", "文件系统操作失败，请检查权限和磁盘")
         except asyncio.CancelledError:

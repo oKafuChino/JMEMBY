@@ -152,7 +152,7 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_disk_pause_and_resume(self):
         task = self.submit()
-        self.worker.settings = replace(self.settings, min_free_space_gb=1, resume_free_space_gb=2)
+        self.worker.settings = replace(self.settings, min_free_space_gb=1, resume_free_space_gb=2, disk_space_check_enabled=True)
         usage = type("Usage", (), {"free": 0})()
         with patch("jmemby.workers.queue.shutil.disk_usage", return_value=usage):
             await self.worker.run_once()
@@ -245,6 +245,24 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         await self.worker.run_once()
         self.assertEqual(self.store.get(task["id"])["status"], "FAILED")
         self.assertFalse(list(self.worker.library.rglob("*.cbz")))
+
+    async def test_disabled_disk_check_resumes_paused_task_without_reading_free_space(self):
+        task = self.submit()
+        self.store.update(task["id"], status="PAUSED_DISK")
+        with patch("jmemby.workers.queue.shutil.disk_usage", side_effect=AssertionError("must not check")):
+            await self.worker.run_once()
+        self.assertEqual(self.store.get(task["id"])["status"], "COMPLETED")
+
+    async def test_actual_disk_full_fails_without_auto_retry_when_checks_disabled(self):
+        import errno
+        task = self.submit()
+        async def full(page, destination, max_bytes):
+            raise OSError(errno.ENOSPC, "full")
+        self.provider.download = full
+        await self.worker.run_once()
+        self.assertEqual(self.store.get(task["id"])["error_code"], "DISK_FULL")
+        self.assertEqual(self.store.get(task["id"])["status"], "FAILED")
+        self.assertFalse(await self.worker.run_once())
 
     def test_config_redacts_secret_and_rejects_empty_whitelist(self):
         self.assertNotIn("secret", repr(self.settings))

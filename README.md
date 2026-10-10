@@ -84,6 +84,8 @@ docker compose up -d app
 
 ## 运维
 
+磁盘空间阈值检查暂时默认关闭（`DISK_SPACE_CHECK_ENABLED=false`），旧 `.env` 未设置此项时也关闭。此前因阈值暂停的任务会自动重新排队。需要恢复时设置为 `true`，继续使用 `MIN_FREE_SPACE_GB` / `RESUME_FREE_SPACE_GB`。真实磁盘写满仍会让任务失败，可在释放空间后手动重试。单页和单任务体积上限不受此开关影响。
+
 Bot 提示数据源失败时，可独立查询漫画元数据（不下载图片）：
 
 ```bash

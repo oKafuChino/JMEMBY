@@ -25,6 +25,7 @@ class Settings:
     retry_max_attempts: int = 3
     min_free_space_gb: int = 5
     resume_free_space_gb: int = 10
+    disk_space_check_enabled: bool = False
     provider_command: str = ""
     komga_username: str = ""
     komga_password: str = field(default="", repr=False)
@@ -65,6 +66,7 @@ class Settings:
             retry_max_attempts=_int("RETRY_MAX_ATTEMPTS", 3),
             min_free_space_gb=minimum,
             resume_free_space_gb=resume,
+            disk_space_check_enabled=os.getenv("DISK_SPACE_CHECK_ENABLED", "false").lower() in {"true", "1", "yes"},
             provider_command=os.getenv("PROVIDER_COMMAND") or json.dumps([sys.executable, "-m", "jmemby.providers.jm_adapter"]),
             komga_username=os.getenv("KOMGA_USERNAME", ""),
             komga_password=os.getenv("KOMGA_PASSWORD", ""),
