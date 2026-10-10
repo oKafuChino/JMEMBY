@@ -55,8 +55,9 @@ def komga_command():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["run", "check-config", "check-integrations", "health", "backup"], nargs="?", default="run")
+    parser.add_argument("command", choices=["run", "check-config", "check-integrations", "check-source", "health", "backup"], nargs="?", default="run")
     parser.add_argument("--destination")
+    parser.add_argument("--manga-id")
     args = parser.parse_args()
     db_path = database_path(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/app/jmemby.db"))
     if args.command == "health":
@@ -75,6 +76,14 @@ def main():
     logging.basicConfig(handlers=[handler], level=logging.INFO)
     try:
         settings = Settings.from_env()
+        if args.command == "check-source":
+            from jmemby.providers.reference import parse_reference
+            if not args.manga_id:
+                parser.error("check-source requires --manga-id")
+            source_id = parse_reference(args.manga_id)
+            manga = asyncio.run(CommandProvider(settings.provider_command, settings.operation_timeout).get_manga(source_id))
+            print(f"数据源元数据查询成功：{len(manga.chapters)} 个章节；未下载图片。")
+            return
         if not os.getenv("KOMGA_COMMAND"):
             from jmemby.integrations.komga.adapter import from_env
             from_env()  # Validate required credentials/root without a network request.

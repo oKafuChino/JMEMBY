@@ -5,6 +5,50 @@ import os
 from pathlib import Path
 import re
 import sys
+from importlib.metadata import PackageNotFoundError, version
+import traceback
+
+
+def classify_error(exc, phase):
+    """Return diagnostic structure without SDK messages, URLs or credentials."""
+    chain, current = [], exc
+    while current is not None and len(chain) < 6 and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    names = [type(item).__name__ for item in chain]
+    lower = " ".join(names).lower()
+    statuses = [getattr(getattr(item, "response", None), "status_code", None) for item in chain]
+    status = next((s for s in statuses if isinstance(s, int) and 100 <= s <= 599), None)
+    if status == 429:
+        code = "RATE_LIMIT"
+    elif status in (401, 403):
+        code = "JM_ACCESS_DENIED"
+    elif status == 404:
+        code = "JM_NOT_FOUND"
+    elif status and status >= 500:
+        code = "SERVER_ERROR"
+    elif "timeout" in lower:
+        code = "TIMEOUT"
+    elif any(name in lower for name in ("connection", "ssl", "proxy", "gaierror")):
+        code = "NETWORK"
+    elif any(isinstance(item, (ImportError, AttributeError, TypeError)) for item in chain):
+        code = "JM_SDK_INCOMPATIBLE"
+    elif "missing" in lower:
+        code = "JM_NOT_FOUND"
+    elif phase == "client_init":
+        code = "JM_CONFIG_ERROR"
+    else:
+        code = "JM_CLIENT_ERROR"
+    try:
+        sdk_version = version("jmcomic")
+    except PackageNotFoundError:
+        sdk_version = "not-installed"
+    frames = traceback.extract_tb(exc.__traceback__)[-4:]
+    return {"error": {"code": code, "diagnostic": {
+        "phase": phase, "exceptions": names, "http_status": status,
+        "sdk_version": sdk_version,
+        "frames": [f"{Path(f.filename).name}:{f.lineno}:{f.name}" for f in frames],
+    }}}
 
 
 def make_client():
@@ -52,17 +96,16 @@ def handle(request, client):
 
 
 def main():
+    phase = "request_parse"
     try:
         request = json.loads(sys.stdin.readline())
+        phase = "client_init"
         with redirect_stdout(sys.stderr):
-            result = handle(request, make_client())
-    except (ValueError, KeyError, IndexError, TypeError):
-        result = {"error": {"code": "PROVIDER_PROTOCOL"}}
+            client = make_client()
+            phase = request.get("operation", "unknown")
+            result = handle(request, client)
     except Exception as exc:
-        # Never emit SDK error bodies, credentials, URLs or cookies.
-        name = type(exc).__name__.lower()
-        code = "NETWORK" if any(s in name for s in ("timeout", "connection", "request")) else "JM_CLIENT_ERROR"
-        result = {"error": {"code": code}}
+        result = classify_error(exc, phase)
     sys.stdout.write(json.dumps(result, ensure_ascii=False))
 
 

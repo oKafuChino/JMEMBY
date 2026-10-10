@@ -10,7 +10,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 from jmemby.integrations.komga.adapter import ApiError, KomgaAPI
-from jmemby.providers.jm_adapter import handle
+from jmemby.providers.jm_adapter import handle, classify_error
 from jmemby.integrations.komga.bridge import KomgaBridge
 from jmemby.domain.errors import JobError
 
@@ -36,6 +36,17 @@ class SDK:
 
 
 class AdapterTests(unittest.TestCase):
+    def test_source_error_classification_and_redaction(self):
+        for error, expected in ((TimeoutError("secret-url"), "TIMEOUT"),
+                                (AttributeError("secret-cookie"), "JM_SDK_INCOMPATIBLE"),
+                                (ConnectionError("secret-password"), "NETWORK")):
+            result = classify_error(error, "metadata")
+            self.assertEqual(result["error"]["code"], expected)
+            self.assertNotIn("secret", json.dumps(result))
+        wrapper = RuntimeError("sensitive SDK message")
+        wrapper.__cause__ = TimeoutError("sensitive proxy URL")
+        self.assertEqual(classify_error(wrapper, "metadata")["error"]["code"], "TIMEOUT")
+
     def test_sdk_metadata_and_stable_pages(self):
         client = SDK()
         self.assertEqual(handle({"operation": "metadata", "id": "42"}, client)["chapters"], [{"id": "52", "title": "第一章"}])
