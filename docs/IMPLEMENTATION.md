@@ -53,7 +53,7 @@
 | 质量检查 | Ruff |
 | 部署 | Docker Compose：app + komga |
 
-锁定验证过的依赖版本并提交锁文件。Komga 镜像固定版本，不使用 latest。初始下载 worker 数量为 1，图片并发建议为 2，并允许配置。
+锁定验证过的依赖版本并提交锁文件。Komga 默认使用 gotson/komga:latest，启动时拉取镜像，无需指定版本号。初始下载 worker 数量为 1，图片并发建议为 2，并允许配置。
 
 ## 3. Agent 执行约定
 

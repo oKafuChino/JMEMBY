@@ -68,10 +68,7 @@ def main():
         values["TELEGRAM_ALLOWED_USER_IDS"] = ask("允许使用的 Telegram 数字用户 ID，逗号分隔")
         if not re.fullmatch(r"[1-9][0-9]*(,[1-9][0-9]*)*", values["TELEGRAM_ALLOWED_USER_IDS"]):
             raise ValueError("用户 ID 格式无效")
-        image = ask("Komga 固定版本镜像，例如 gotson/komga:<版本号>（不要填 latest）")
-        if not (re.fullmatch(r"gotson/komga:[0-9]+\.[0-9]+\.[0-9]+", image) or re.fullmatch(r"gotson/komga@sha256:[a-f0-9]{64}", image)):
-            raise ValueError("需要 gotson/komga 的固定数字版本或 sha256 digest")
-        values["KOMGA_IMAGE"] = image
+        values["KOMGA_IMAGE"] = "gotson/komga:latest"
         values["KOMGA_PUBLIC_URL"] = ask("Komga 阅读入口", "http://localhost:25600")
     elif action == "komga":
         values["KOMGA_USERNAME"] = ask("Komga 管理员邮箱", values.get("KOMGA_USERNAME", ""))

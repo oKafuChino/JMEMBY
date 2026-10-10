@@ -28,7 +28,8 @@ services:
         max-size: 10m
         max-file: "3"
   komga:
-    image: ${KOMGA_IMAGE:?Set KOMGA_IMAGE to a verified versioned image}
+    image: ${KOMGA_IMAGE:-gotson/komga:latest}
+    pull_policy: always
     user: ${APP_UID:-1000}:${APP_GID:-1000}
     volumes:
       - ./data/komga:/config

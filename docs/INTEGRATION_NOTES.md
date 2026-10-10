@@ -10,7 +10,7 @@ JMComic 采用用户指定项目 https://github.com/hect0x7/JMComic-Crawler-Pyth
 
 Komga 采用 Basic 鉴权：GET /api/v1/libraries/{id} 核对 root；POST /api/v1/libraries/{id}/scan；GET /api/v1/books 传 library_id/page/size 分页。按 libraryId 与 url 完整路径匹配，支持 file URI。429 Retry-After 和网络/5xx 可重试，401/403 终止。接口及 DTO 尚需真实版本核实；7 项新测试为本地契约测试，不证明服务器兼容。
 
-新增安装脚本，要求用户选择固定 Komga 镜像，未凭空指定已验证版本。`check-integrations` 可在 VPS 核实 SDK 导入与 library 路径；扫描/下载还需完整任务验收。
+安装脚本默认使用 gotson/komga:latest，不要求输入版本号；Compose 启动时拉取镜像。`check-integrations` 可在 VPS 核实 SDK 导入与 library 路径；扫描/下载还需完整任务验收。
 
 ## 数据源
 

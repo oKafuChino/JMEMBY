@@ -25,7 +25,7 @@ bash install.sh
 脚本将：
 
 1. 检查或安装 Docker、Compose、Python 3。
-2. 交互填写 Telegram Token、允许使用的数字用户 ID、Komga 固定版本镜像和阅读入口。
+2. 交互填写 Telegram Token、允许使用的数字用户 ID 和阅读入口，Komga 默认使用 `gotson/komga:latest`，无需填写版本。
 3. 创建持久化目录并启动 Komga。
 4. 引导你首次创建 Komga 管理员和 `/data` 漫画库，然后填写管理员邮箱、密码及 library ID。
 5. 构建 Bot 镜像，运行配置检查、SDK 导入和 Komga 连接检查，成功后启动 Bot。
@@ -38,7 +38,7 @@ ssh -L 25600:127.0.0.1:25600 用户名@VPS地址
 
 再访问 `http://localhost:25600`。library ID 在打开漫画库后的浏览器 URL 中。长期使用可自行配置 HTTPS 反向代理或 VPN，并更新 `KOMGA_PUBLIC_URL`。
 
-脚本需交互终端；不要通过 `curl | bash` 运行。重复执行保留现有 `.env` 和漫画数据，不自动更新版本、不递归修改已有目录所有者。失败时先检查提示，修复后重新执行。若发行版软件源没有 Compose v2，脚本会停止并给出 Docker 官方安装文档。
+脚本需交互终端；不要通过 `curl | bash` 运行。重复执行保留现有 `.env` 和漫画数据，不递归修改已有目录所有者。Compose 每次启动 Komga 时拉取所配置的镜像，默认拉取 `latest`；已有配置若指定了其他标签，会继续使用该标签，可将 `KOMGA_IMAGE` 改为 `gotson/komga:latest`。失败时先检查提示，修复后重新执行。若发行版软件源没有 Compose v2，脚本会停止并给出 Docker 官方安装文档。
 
 ## 手动安装
 
@@ -63,7 +63,7 @@ docker compose up -d app
 | --- | --- |
 | TELEGRAM_BOT_TOKEN | BotFather 获取的 Token |
 | TELEGRAM_ALLOWED_USER_IDS | 允许使用的数字用户 ID，逗号分隔 |
-| KOMGA_IMAGE | `gotson/komga:具体版本号` 或镜像 digest；需自行选定并验证 |
+| KOMGA_IMAGE | 可选，默认 `gotson/komga:latest`，留空也使用此默认值 |
 | KOMGA_USERNAME / KOMGA_PASSWORD | 有扫描权限的 Komga 管理员账户 |
 | KOMGA_LIBRARY_ID | 根目录为 `/data` 的漫画库 ID |
 | KOMGA_PUBLIC_URL | 发给用户的阅读入口 |

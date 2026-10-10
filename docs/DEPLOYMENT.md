@@ -4,7 +4,7 @@
 
 ## 前置条件
 
-Linux VPS、Docker Engine 和 Compose 插件。选择 Komga 固定版本，填入 KOMGA_IMAGE，禁止使用 latest；先执行连接检查再提交小样本验收。
+Linux VPS、Docker Engine 和 Compose 插件。Komga 默认拉取 gotson/komga:latest，无需填写版本号；先执行连接检查再提交小样本验收。
 
 复制环境示例，配置白名单、Token、Komga 凭据和公共 URL。`.env` 仅授权部署用户读取，不加入版本库。
 
