@@ -10,7 +10,13 @@ Telegram 管理的漫画下载服务：提交禁漫漫画 ID → 确认下载 �
 
 适用于 Linux VPS。脚本优先复用现有 Docker；缺失时通过 Debian/Ubuntu 的 apt 软件源安装 Docker 和 Compose v2。其他发行版请提前安装 Docker Engine、Compose v2、Python 3。
 
-将本项目完整目录上传或克隆到 VPS 后，在项目根目录执行：
+GitHub 仓库：[oKafuChino/JMEMBY](https://github.com/oKafuChino/JMEMBY)。在已安装 Git 的 VPS 交互终端执行以下命令，克隆项目并启动安装：
+
+```bash
+git clone https://github.com/oKafuChino/JMEMBY.git && cd JMEMBY && bash install.sh
+```
+
+如果已经克隆或上传了项目，在项目根目录执行：
 
 ```bash
 bash install.sh
