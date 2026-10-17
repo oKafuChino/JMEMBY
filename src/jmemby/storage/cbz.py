@@ -13,7 +13,7 @@ from PIL import Image
 
 from jmemby.domain.errors import JobError
 
-from jmemby.domain.models import Chapter, Manga
+from jmemby.domain.models import Chapter, Manga, normalize_tags
 
 _INVALID = re.compile(r"[<>:\"/\\|?*\x00-\x1f]")
 
@@ -35,8 +35,9 @@ def library_directory(root: Path, manga: Manga) -> Path:
     return root / f"{safe_component(manga.title, limit=70)} [{id_component(manga.source)}-{id_component(manga.source_id)}]"
 
 
-def chapter_filename(chapter: Chapter) -> str:
-    return f"{chapter.ordinal:04d} - {safe_component(chapter.title, limit=70)} [{id_component(chapter.source_id)}].cbz"
+def chapter_filename(chapter: Chapter, manga: Manga | None = None) -> str:
+    suffix = f" [JM{safe_component(manga.source_id, limit=24)}]" if manga and manga.source == "jmcomic" else ""
+    return f"{chapter.ordinal:04d} - {safe_component(chapter.title, limit=70)} [{id_component(chapter.source_id)}]{suffix}.cbz"
 
 
 def contained(root: Path, relative: str) -> Path:
@@ -112,6 +113,7 @@ def comic_info(manga: Manga, chapter: Chapter) -> bytes:
   <Series>{escape(manga.title)}</Series>
   <Number>{chapter.ordinal}</Number>
   <Writer>{authors}</Writer>
+  <Tags>{escape(", ".join(normalize_tags(manga.tags)))}</Tags>
   <PageCount>{len(chapter.pages)}</PageCount>
 </ComicInfo>
 '''

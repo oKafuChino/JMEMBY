@@ -5,6 +5,25 @@ from enum import StrEnum
 from typing import Any
 
 
+def normalize_tags(value) -> tuple[str, ...]:
+    """Optional source metadata must not break a download or produce invalid XML."""
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return ()
+    result = []
+    for tag in value[:100]:
+        if not isinstance(tag, str):
+            continue
+        tag = "".join(c for c in tag if c in "\t\n\r" or
+                      0x20 <= ord(c) <= 0xD7FF or 0xE000 <= ord(c) <= 0xFFFD or
+                      0x10000 <= ord(c) <= 0x10FFFF)
+        tag = " ".join(tag.split())[:100]
+        if tag and tag not in result:
+            result.append(tag)
+    return tuple(result)
+
+
 class TaskStatus(StrEnum):
     QUEUED = "QUEUED"
     DOWNLOADING = "DOWNLOADING"
@@ -49,6 +68,7 @@ class Manga:
     authors: tuple[str, ...] = ()
     chapters: tuple[Chapter, ...] = ()
     cover_url: str | None = None
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)

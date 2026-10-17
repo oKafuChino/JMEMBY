@@ -7,7 +7,7 @@ import sqlite3
 import time
 import uuid
 
-from jmemby.domain.models import Chapter, Manga, Page
+from jmemby.domain.models import Chapter, Manga, Page, normalize_tags
 from jmemby.storage.cbz import chapter_filename, library_directory
 
 TERMINAL = ("COMPLETED", "FAILED", "CANCELLED")
@@ -18,7 +18,7 @@ def decode_manga(raw):
     return Manga(data["source"], data["source_id"], data["title"], tuple(data["authors"]),
                  tuple(Chapter(c["source_id"], c["ordinal"], c["title"],
                                tuple(Page(**p) for p in c["pages"])) for c in data["chapters"]),
-                 data.get("cover_url"))
+                 data.get("cover_url"), normalize_tags(data.get("tags")))
 
 
 SCHEMA = """
@@ -223,7 +223,7 @@ class Store:
         db.execute("INSERT INTO tasks(id,manga_id,snapshot,user_id,chat_id,retry_of,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
                    (task_id, record["id"], raw, user_id, chat_id, retry_of, now, now))
         for chapter in manga.chapters:
-            path = (Path(record["directory"]) / chapter_filename(chapter)).as_posix()
+            path = (Path(record["directory"]) / chapter_filename(chapter, manga)).as_posix()
             db.execute("INSERT OR IGNORE INTO chapters(manga_id,source_id,ordinal,title,path) VALUES (?,?,?,?,?)",
                        (record["id"], chapter.source_id, chapter.ordinal, chapter.title, path))
             chapter_id = db.execute("SELECT id FROM chapters WHERE manga_id=? AND source_id=?",

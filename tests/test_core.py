@@ -69,6 +69,32 @@ class FakeKomga:
 
 
 class CoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tags_survive_snapshot_and_packaging(self):
+        from xml.etree import ElementTree
+        from jmemby.db.store import decode_manga
+        item = replace(manga(), tags=("冒险", "A & <B>", "冒险", "\x00"))
+        task = self.store.submit(item, 1, 1)
+        self.assertEqual(decode_manga(task["snapshot"]).tags, ("冒险", "A & <B>"))
+        await self.worker.run_once()
+        record = self.store.chapters(task["id"])[0]
+        self.assertTrue(record["path"].endswith(" [JM42].cbz"))
+        with zipfile.ZipFile(self.worker.library / record["path"]) as archive:
+            info = ElementTree.fromstring(archive.read("ComicInfo.xml"))
+            self.assertEqual(info.findtext("Tags"), "冒险, A & <B>")
+
+    def test_old_snapshots_and_existing_paths_remain_compatible(self):
+        from dataclasses import asdict
+        from jmemby.db.store import decode_manga
+        raw = asdict(manga())
+        raw.pop("tags")
+        self.assertEqual(decode_manga(raw).tags, ())
+        task = self.submit()
+        record = self.store.chapters(task["id"])[0]
+        self.store.connection.execute("UPDATE chapters SET path='legacy.cbz' WHERE id=?", (record["id"],))
+        self.store.finish(task["id"], "FAILED", "NETWORK", "retry")
+        new_task = self.submit()
+        self.assertEqual(self.store.chapters(new_task["id"])[0]["path"], "legacy.cbz")
+
     async def test_sdk_scratch_file_does_not_poison_resume(self):
         task = self.submit()
         record = self.store.chapters(task["id"])[0]

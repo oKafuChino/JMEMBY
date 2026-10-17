@@ -10,6 +10,7 @@ import traceback
 import time
 import errno
 import tempfile
+from jmemby.domain.models import normalize_tags
 
 
 class StageError(Exception):
@@ -137,7 +138,11 @@ def handle(request, client):
         return {}
     if operation == "metadata":
         album = at_stage("album_metadata", client.get_album_detail, request["id"])
-        return {"title": album.name, "authors": list(album.authors),
+        try:
+            tags = normalize_tags(getattr(album, "tags", ()))
+        except Exception:
+            tags = ()  # Optional SDK metadata: keep downloading if unavailable.
+        return {"title": album.name, "authors": list(album.authors), "tags": list(tags),
                 "chapters": [{"id": str(photo.id), "title": photo.name} for photo in album]}
     if operation == "pages":
         photo = at_stage("chapter_pages", client.get_photo_detail, request["chapter_id"])

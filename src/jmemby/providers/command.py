@@ -8,7 +8,7 @@ import logging
 import re
 
 from jmemby.domain.errors import JobError
-from jmemby.domain.models import Chapter, Manga, Page
+from jmemby.domain.models import Chapter, Manga, Page, normalize_tags
 
 
 class CommandProvider:
@@ -106,7 +106,8 @@ class CommandProvider:
             if not chapters or len({c.source_id for c in chapters}) != len(chapters):
                 raise ValueError("empty or duplicated chapters")
             return Manga(self.source, source_id, str(result["title"]),
-                         tuple(str(a) for a in result.get("authors", [])), chapters)
+                         tuple(str(a) for a in result.get("authors", [])), chapters,
+                         tags=normalize_tags(result.get("tags")))
         except (KeyError, TypeError, ValueError) as exc:
             raise JobError("PROVIDER_PROTOCOL", "数据源章节信息不完整") from exc
 

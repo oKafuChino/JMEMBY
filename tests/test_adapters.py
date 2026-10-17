@@ -36,6 +36,14 @@ class SDK:
 
 
 class AdapterTests(unittest.TestCase):
+    def test_optional_album_tags(self):
+        client = SDK()
+        self.assertEqual(handle({"operation": "metadata", "id": "42"}, client)["tags"], [])
+        album = client.get_album_detail("42")
+        album.tags = ["冒险", " 冒险 ", "剧情", None]
+        with patch.object(client, "get_album_detail", return_value=album):
+            self.assertEqual(handle({"operation": "metadata", "id": "42"}, client)["tags"], ["冒险", "剧情"])
+
     def test_disk_full_sdk_error_is_not_retried_as_network(self):
         import errno
         result = classify_error(OSError(errno.ENOSPC, "full"), "image_download_decode")

@@ -2,6 +2,10 @@
 
 Telegram 管理的漫画下载服务：提交禁漫漫画 ID → 确认下载 → 生成 CBZ → Komga 自动扫描 → Telegram 通知。
 
+下载时会尝试读取原作品标签，去重后写入各章节 CBZ 的 `ComicInfo.xml` 的 `Tags` 字段。请在 Komga 漫画库设置中开启 ComicInfo 元数据及标签导入；扫描/分析完成后即可在库中查看标签。源站未提供标签时正常下载，不额外请求标签接口。
+
+新建章节文件名末尾带作品号，例如 `0001 - 第一章 [章节标识] [JM1481162].cbz`，多章节统一使用作品号而非章节号。已有数据库记录的文件路径保持不变；本次更新不会批量重命名旧文件或回填旧 CBZ 的标签。
+
 内置 [JMComic-Crawler-Python](https://github.com/hect0x7/JMComic-Crawler-Python) SDK 适配器和 Komga REST 适配器，无需另写下载脚本。支持白名单、持久化队列、去重、取消、重启恢复、磁盘阈值、失败重试及 Docker Compose 部署。
 
 **验证状态：适配代码和离线契约测试已完成；由于开发环境网络受限，尚未核实上游当前源码，也未运行真实 JMComic / Komga / Telegram 或 VPS 验收。当前为待实测版本，不承诺开箱即用。**
