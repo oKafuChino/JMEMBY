@@ -72,7 +72,7 @@ def main():
             print("检测到现有 .env，保留 Token、部署版本和其他配置。")
             return
         values["TELEGRAM_BOT_TOKEN"] = ask("Telegram Bot Token", secret=True)
-        values["TELEGRAM_ALLOWED_USER_IDS"] = ask("允许使用的 Telegram 数字用户 ID，逗号分隔")
+        values["TELEGRAM_ALLOWED_USER_IDS"] = ask("管理员 Telegram 数字用户 ID，逗号分隔；普通用户在 Bot 注册")
         if not re.fullmatch(r"[1-9][0-9]*(,[1-9][0-9]*)*", values["TELEGRAM_ALLOWED_USER_IDS"]):
             raise ValueError("用户 ID 格式无效")
         values["KOMGA_IMAGE"] = "gotson/komga:latest"

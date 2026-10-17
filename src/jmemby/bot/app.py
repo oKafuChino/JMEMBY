@@ -18,14 +18,26 @@ def allowed(event, ids):
 
 
 class Authorization(BaseMiddleware):
-    def __init__(self, ids):
-        self.ids = ids
+    def __init__(self, users):
+        self.users = users
 
     async def __call__(self, handler, event, data):
-        if not allowed(event, self.ids):
+        user = getattr(event, "from_user", None)
+        if not user or not allowed(event, {user.id}):
             if isinstance(event, CallbackQuery):
                 await event.answer("无权操作", show_alert=True)
             return
+        command = ((getattr(event, "text", "") or "").split() or [""])[0].split("@")[0]
+        public = not isinstance(event, CallbackQuery) and command in {"/start", "/help", "/register", "/me"}
+        if not public:
+            try:
+                self.users.require_member(user.id)
+            except ValueError as exc:
+                if isinstance(event, CallbackQuery):
+                    await event.answer(str(exc), show_alert=True)
+                else:
+                    await event.answer(str(exc))
+                return
         return await handler(event, data)
 
 
@@ -37,7 +49,8 @@ def describe(task):
 
 def create_dispatcher(service, settings):
     router = Router()
-    guard = Authorization(settings.allowed_user_ids)
+    users = service.users
+    guard = Authorization(users)
     router.message.outer_middleware(guard)
     router.callback_query.outer_middleware(guard)
 
@@ -49,10 +62,38 @@ def create_dispatcher(service, settings):
         user_id = message.from_user.id
         try:
             if command in {"/start", "/help"}:
-                await message.answer("发送数字漫画 ID 或 /download ID\n/queue [页码] /status 任务ID\n/cancel 任务ID /retry 任务ID\n/library /disk")
+                help_text = "/register 注册账号；/me 查看账号\n注册后发送数字漫画 ID 或 /download ID\n/queue [页码] /status 任务ID\n/cancel 任务ID /retry 任务ID\n/library 阅读入口"
+                if users.is_admin(user_id):
+                    help_text += "\n管理员：/admin /users [页码]\n/registration on|off\n/ban 用户ID /unban 用户ID\n/disk 磁盘状态"
+                await message.answer(help_text)
+            elif command == "/register":
+                await message.answer(users.register(user_id, message.from_user.username, message.from_user.full_name))
+            elif command == "/me":
+                account = users.get(user_id)
+                status = "管理员" if users.is_admin(user_id) else "未注册" if not account else "已禁用" if account["blocked"] else "已注册"
+                await message.answer(f"用户 ID：{user_id}\n状态：{status}")
+            elif command == "/admin":
+                stats = users.statistics(user_id)
+                await message.answer(f"注册用户总数：{stats['total']}\n正常用户：{stats['active']}\n禁用用户：{stats['blocked']}\n管理员：{stats['admins']}\n注册：{'开放' if stats['registration_open'] else '关闭'}\n/users [页码]\n/registration on|off\n/ban 用户ID /unban 用户ID")
+            elif command == "/users":
+                accounts = users.list_users(user_id, int(argument or "1"))
+                lines = [f"{u['user_id']} | @{u['username'] or '-'} | {'禁用' if u['blocked'] else '正常'}" for u in accounts]
+                await message.answer("\n".join(lines) or "本页暂无注册用户")
+            elif command == "/registration":
+                users.require_admin(user_id)
+                if argument.strip().lower() not in {"on", "off"}:
+                    raise ValueError("用法：/registration on 或 /registration off")
+                users.set_registration(user_id, argument.strip().lower() == "on")
+                await message.answer("新用户注册已" + ("开放" if users.registration_open() else "关闭"))
+            elif command in {"/ban", "/unban"}:
+                users.require_admin(user_id)
+                target = int(argument.strip())
+                users.set_blocked(user_id, target, command == "/ban")
+                await message.answer("已禁用用户并请求取消其未完成任务" if command == "/ban" else "已解除禁用，取消的任务不会自动恢复")
             elif command == "/library":
                 await message.answer(settings.komga_public_url or "尚未配置访问地址")
             elif command == "/disk":
+                users.require_admin(user_id)
                 free = shutil.disk_usage(settings.storage_root).free / 1024**3
                 policy = f"暂停阈值 {settings.min_free_space_gb} GiB" if settings.disk_space_check_enabled else "磁盘空间阈值检查已关闭"
                 await message.answer(f"剩余 {free:.1f} GiB；{policy}")

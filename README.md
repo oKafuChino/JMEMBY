@@ -25,7 +25,7 @@ bash install.sh
 脚本将：
 
 1. 检查或安装 Docker、Compose、Python 3。
-2. 交互填写 Telegram Token、允许使用的数字用户 ID 和阅读入口，Komga 默认使用 `gotson/komga:latest`，无需填写版本。
+2. 交互填写 Telegram Token、管理员数字用户 ID 和阅读入口，普通用户在 Bot 注册。Komga 默认使用 `gotson/komga:latest`，无需填写版本。
 3. 创建持久化目录并启动 Komga。
 4. 引导你首次创建 Komga 管理员和 `/data` 漫画库，然后填写管理员邮箱、密码及 library ID。
 5. 构建 Bot 镜像，运行配置检查、SDK 导入和 Komga 连接检查，成功后启动 Bot。
@@ -62,7 +62,7 @@ docker compose up -d app
 | 配置 | 用途 |
 | --- | --- |
 | TELEGRAM_BOT_TOKEN | BotFather 获取的 Token |
-| TELEGRAM_ALLOWED_USER_IDS | 允许使用的数字用户 ID，逗号分隔 |
+| TELEGRAM_ALLOWED_USER_IDS | 管理员数字用户 ID，逗号分隔；保留旧配置名，普通用户无需加入 |
 | KOMGA_IMAGE | 可选，默认 `gotson/komga:latest`，留空也使用此默认值 |
 | KOMGA_USERNAME / KOMGA_PASSWORD | 有扫描权限的 Komga 管理员账户 |
 | KOMGA_LIBRARY_ID | 根目录为 `/data` 的漫画库 ID |
@@ -74,13 +74,30 @@ docker compose up -d app
 
 ## Telegram 使用
 
+普通用户先在私聊发送 `/register` 注册，成功后可提交下载、查看自己的任务和阅读入口。`/me` 查看自己的用户 ID 与状态。注册默认开放，开关和注册资料保存在 SQLite，重启不会丢失。
+
+管理员继续使用 `.env` 中的 `TELEGRAM_ALLOWED_USER_IDS`，无需注册：
+
+| 命令 | 功能 |
+| --- | --- |
+| `/admin` | 查看总注册人数、正常/禁用人数、管理员人数和注册开关 |
+| `/users [页码]` | 每页 10 名注册用户，显示数字 ID、用户名和状态 |
+| `/registration on` / `/registration off` | 开放或关闭新注册，不影响已有用户 |
+| `/ban 用户ID` | 禁用用户，使未确认按钮失效并请求取消未完成任务 |
+| `/unban 用户ID` | 恢复使用权限，不自动恢复已取消任务 |
+| `/disk` | 管理员查看存储状态 |
+
+注册人数不包含当前配置的管理员；被禁用用户仍计入总人数。管理员身份仅由部署配置决定，不能在聊天中自行提升。注册只提供 Bot 使用权限，不创建或管理 Komga 阅读账户，阅读仍由 Komga 自身鉴权控制。
+
+升级启动时自动将数据库 schema 1 迁移到 2，保留原任务与漫画记录。升级前备份数据库；降级旧代码需要恢复升级前备份。
+
 - 发送数字漫画 ID 或 `/download ID`，点击确认。
 - `/queue [页码]`、`/status 任务ID`：查询队列和进度。
 - `/cancel 任务ID`：取消任务，保留已发布章节。
 - `/retry 任务ID`：重试失败任务，复用有效文件。
 - `/library`：阅读入口；`/disk`：剩余空间。
 
-仅私聊白名单用户可用。已保存文件和 Komga 入库分开记录；扫描接受不等于完成，只有匹配到所有文件才通知成功。
+仅私聊已注册用户和管理员可使用下载功能，命令和按钮都会重新检查权限。普通用户只能操作自己的任务；用户管理命令仅管理员可用。已保存文件和 Komga 入库分开记录；扫描接受不等于完成，只有匹配到所有文件才通知成功。
 
 ## 运维
 

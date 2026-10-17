@@ -15,6 +15,7 @@ from jmemby.providers.command import CommandProvider
 from jmemby.providers.builtin import JmProvider
 from jmemby.runtime import JsonFormatter, backup_database, database_path, instance_lock
 from jmemby.services.tasks import TaskService
+from jmemby.services.users import UserService
 from jmemby.workers.queue import Worker
 
 
@@ -27,7 +28,8 @@ async def run(settings, db_path):
     store = Store(db_path)
     bot = Bot(settings.telegram_bot_token)
     worker = Worker(store, provider, komga, settings)
-    dispatcher = create_dispatcher(TaskService(store, provider, settings.provider_domains), settings)
+    users = UserService(store, settings.allowed_user_ids)
+    dispatcher = create_dispatcher(TaskService(store, provider, settings.provider_domains, users), settings)
     heartbeat = db_path.parent / "heartbeat"
 
     async def health():

@@ -73,7 +73,21 @@ class Store:
         version = self.connection.execute("PRAGMA user_version").fetchone()[0]
         if version == 0:
             self.connection.executescript("BEGIN IMMEDIATE;" + SCHEMA + "PRAGMA user_version=1; COMMIT;")
-        elif version != 1:
+            version = 1
+        if version == 1:
+            self.connection.executescript("""
+                BEGIN IMMEDIATE;
+                CREATE TABLE users (
+                    user_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '',
+                    display_name TEXT NOT NULL DEFAULT '',
+                    blocked INTEGER NOT NULL DEFAULT 0 CHECK(blocked IN (0,1)),
+                    registered_at REAL NOT NULL);
+                CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO settings VALUES ('registration_open','1');
+                PRAGMA user_version=2;
+                COMMIT;
+            """)
+        elif version != 2:
             self.connection.close()
             raise RuntimeError("Unsupported database version; restore or migrate before startup")
 
