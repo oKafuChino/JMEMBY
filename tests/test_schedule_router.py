@@ -71,7 +71,8 @@ class ScheduleRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(schedule_tags(rows[0]), ["冒险", "科幻"])
         self.assertEqual(rows[0]["item_limit"], 2)
-        self.assertEqual(rows[0]["enabled"], 0)
+        self.assertEqual(rows[0]["enabled"], 1)
+        self.assertIn("已创建并启用", self.answer.call_args.args[0])
         self.assertIsNone(self.draft())
         self.assertEqual(self.answer.await_count, 6)
         self.fallback.assert_not_awaited()
@@ -86,6 +87,19 @@ class ScheduleRouterTests(unittest.IsolatedAsyncioTestCase):
         await self.send("/schedule_cancel")
         await self.send("12345")
         self.fallback.assert_awaited_once()
+
+    async def test_chinese_frequency_default_limit_and_fifty_boundary(self):
+        for limit, expected in (("default", 5), ("50", 50)):
+            for text in ("/schedule_add", "冒险，科幻", "每日", "03:00", "default"):
+                await self.send(text)
+            self.assertIn("1–50", self.answer.call_args.args[0])
+            await self.send("51")
+            self.assertEqual(self.draft()["step"], "limit")
+            await self.send(limit)
+            schedule = self.service.list(1)[0]
+            self.assertEqual(schedule["item_limit"], expected)
+            self.assertEqual(schedule["enabled"], 1)
+            self.assertIn("间隔 5 分钟", self.answer.call_args.args[0])
 
     async def test_expired_draft_explains_restart_and_is_removed(self):
         await self.send("/schedule_add")

@@ -30,7 +30,8 @@ def describe_schedule(row):
     label = "标签（匹配任一）" if len(tags) > 1 else "标签"
     return (f"计划 #{row['id']} | {'启用' if row['enabled'] else '暂停'}\n{label}：{'、'.join(tags)}\n"
             f"{kind} {spec.get('date', '')} {weekday} {spec['time']} {spec['timezone']}\n"
-            f"每次最多 {row['item_limit']} 部；AI 标记强制排除\n下一次：{local}")
+            f"每次最多 {row['item_limit']} 部；自动下载每部处理结束后间隔 5 分钟\n"
+            f"AI 标记强制排除\n下一次：{local}")
 
 
 def create_schedule_router(service, settings):
@@ -82,6 +83,7 @@ def create_schedule_router(service, settings):
             step, prompt = "kind", (f"已接收标签：{'、'.join(data['tags'])}（匹配任一标签）。\n"
                                     "输入 once（单次）、daily（每日）或 weekly（每周）。")
         elif step == "kind":
+            text = {"单次": "once", "每天": "daily", "每日": "daily", "每周": "weekly"}.get(text.casefold(), text.casefold())
             if text not in {"once", "daily", "weekly"}:
                 raise ValueError("请输入 once、daily 或 weekly")
             data["kind"] = text
@@ -104,13 +106,18 @@ def create_schedule_router(service, settings):
             from jmemby.services.schedule_time import next_time
             if next_time(data, service.clock()) is None:
                 raise ValueError("时间已过期或不存在，请 /schedule_add 重新创建")
-            step, prompt = "limit", "输入每次最多新入队部数（1–20，建议 5）。"
+            step, prompt = "limit", "输入每次最多新入队部数（1–50，输入 default 使用 5）。\n提交数量后直接启用，到指定时间开始执行；每部处理结束后等待 5 分钟。"
         else:
             spec = {k: v for k, v in data.items() if k not in {"tag", "tags"}}
             tags = data["tags"] if "tags" in data else [data["tag"]]
-            schedule = service.create(actor, tags, spec, int(text))
-            service.db.execute("DELETE FROM schedule_drafts WHERE owner_user_id=?", (actor,))
-            await message.answer(describe_schedule(schedule) + f"\n已保存为暂停。先 /schedule_preview {schedule['id']}，再 /schedule_enable {schedule['id']}。")
+            limit = 5 if text.casefold() == "default" else int(text)
+            with service.store.transaction():
+                schedule = service.create(actor, tags, spec, limit)
+                service.db.execute("DELETE FROM schedule_drafts WHERE owner_user_id=?", (actor,))
+            protection = "已开启" if settings.disk_space_check_enabled else "已关闭，请预留存储空间"
+            await message.answer(describe_schedule(schedule)
+                                 + f"\n已创建并启用，将在下一次指定时间执行。\n磁盘阈值保护：{protection}"
+                                 + f"\n/schedule_preview {schedule['id']} 查看候选\n/schedule_pause {schedule['id']} 暂停计划")
             return
         service.db.execute("UPDATE schedule_drafts SET step=?,data=?,expires=? WHERE owner_user_id=?", (step, json.dumps(data), service.clock() + 600, actor))
         await message.answer(prompt + "\n/schedule_cancel 退出创建。")
@@ -125,7 +132,8 @@ def create_schedule_router(service, settings):
                 service.db.execute("INSERT OR REPLACE INTO schedule_drafts VALUES (?,?,?,?)", (actor, "tag", "{}", service.clock() + 600))
                 await message.answer("请输入 1–10 个漫画标签，用逗号、顿号或换行分隔，例如：冒险，科幻。\n"
                                      "匹配任一标签即可，作品去重后共用每次数量；标签内空格保留。\n"
-                                     "多标签按精确点赞数合并排序，无法确认点赞数的作品跳过。\n/schedule_cancel 退出创建。")
+                                     "多标签按精确点赞数合并排序，无法确认点赞数的作品跳过。\n"
+                                     "创建完成即启用，每次最多 50 部，每部处理结束后间隔 5 分钟。\n/schedule_cancel 退出创建。")
             elif command == "/schedule_cancel":
                 service.db.execute("DELETE FROM schedule_drafts WHERE owner_user_id=?", (actor,))
                 await message.answer("已退出计划创建")

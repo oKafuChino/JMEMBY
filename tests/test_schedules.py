@@ -6,7 +6,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from jmemby.db.store import Store, SCHEMA
 from jmemby.domain.discovery import DiscoveryDetail, evaluate
@@ -155,9 +155,9 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         await self.scheduler.process(self.run_record(run_id))
         return run_id
 
-    def test_create_paused_permissions_and_action_identity(self):
+    def test_create_enabled_permissions_and_action_identity(self):
         s = self.create()
-        self.assertEqual(s["enabled"], 0)
+        self.assertEqual(s["enabled"], 1)
         with self.assertRaises(ValueError):
             self.service.create(2, "冒险", self.spec)
         self.users.admin_ids = frozenset({1, 2})
@@ -260,7 +260,10 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.get(tasks[0]["id"])["status"], "COMPLETED")
         self.provider.details["1"] = detail("1", tags=("冒险", "ai-generate"))
         before = self.provider.downloads
-        await worker.run_once()
+        self.assertFalse(await worker.run_once())
+        after = float(self.store.connection.execute("SELECT value FROM settings WHERE key='schedule_download_after'").fetchone()[0])
+        with patch("jmemby.db.store.time.time", return_value=after):
+            self.assertTrue(await worker.run_once())
         self.assertEqual(self.store.get(tasks[1]["id"])["error_code"], "CONTENT_EXCLUDED")
         self.assertEqual(self.provider.downloads, before)
 
@@ -432,8 +435,125 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retried["origin"], "schedule")
         self.assertEqual(retried["schedule_run_id"], run_id)
         self.assertEqual(self.run_record(run_id)["status"], "QUEUED")
-        await worker.run_once()
+        self.assertFalse(await worker.run_once())
+        after = float(self.store.connection.execute("SELECT value FROM settings WHERE key='schedule_download_after'").fetchone()[0])
+        with patch("jmemby.db.store.time.time", return_value=after):
+            self.assertTrue(await worker.run_once())
+        self.assertEqual(self.store.get(retried["id"])["error_code"], "CONTENT_EXCLUDED")
         self.assertEqual(self.provider.downloads, 0)
+
+    def test_new_schedule_is_due_without_enable_confirmation(self):
+        s = self.create()
+        self.assertEqual(s["enabled"], 1)
+        self.assertEqual(len(self.service.history(s["id"], 1)), 0)
+        self.now += 3600
+        self.service.claim_due()
+        self.assertEqual(self.service.history(s["id"], 1)[0]["status"], "DISCOVERING")
+
+    async def test_fifty_limit_admits_fifty_and_rejects_over_limit(self):
+        for value in (0, 51, True, "50"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.create(value)
+        self.provider.pages = [[str(i) for i in range(1, 61)]]
+        self.provider.details = {str(i): detail(str(i), likes=100-i) for i in range(1, 61)}
+        run_id = await self.execute(50)
+        self.assertEqual(self.run_record(run_id)["status"], "QUEUED")
+        self.assertEqual(self.service.pending_count(), 50)
+        self.assertEqual(self.store.connection.execute("SELECT COUNT(*) FROM auto_download_claims").fetchone()[0], 50)
+
+    def cooldown_worker(self):
+        settings = Settings("secret", frozenset({1}), "sqlite+aiosqlite:///unused", str(self.path), "http://komga", "", "lib", "/data")
+        return Worker(self.store, self.provider, FakeKomga(), settings)
+
+    async def test_gap_is_five_minutes_after_completion_not_start(self):
+        await self.execute(2)
+        worker = self.cooldown_worker()
+        async def slow_execute(task):
+            self.now += 600
+        with patch("jmemby.db.store.time.time", side_effect=lambda: self.now):
+            with patch.object(worker, "execute", side_effect=slow_execute) as execute:
+                self.assertTrue(await worker.run_once())
+                self.assertFalse(await worker.run_once())
+                self.now += 299
+                self.assertFalse(await worker.run_once())
+                self.now += 1
+                self.assertTrue(await worker.run_once())
+                self.assertEqual(execute.await_count, 2)
+
+    async def test_gap_is_shared_across_plans_and_survives_restart(self):
+        await self.execute(1)
+        worker = self.cooldown_worker()
+        with patch("jmemby.db.store.time.time", side_effect=lambda: self.now):
+            with patch.object(worker, "execute", new_callable=AsyncMock):
+                await worker.run_once()
+            await self.execute(1)
+            self.store.close()
+            self.store = Store(self.path / "db.sqlite")
+            self.store.recover()
+            self.now += 299
+            self.assertIsNone(self.store.next_task())
+            self.now += 1
+            task = self.store.next_task()
+            self.assertEqual(json.loads(task["snapshot"])["source_id"], "2")
+
+    async def test_crash_during_attempt_or_after_finish_preserves_gap(self):
+        await self.execute(2)
+        with patch("jmemby.db.store.time.time", side_effect=lambda: self.now):
+            first = self.store.next_task()
+            self.assertIsNone(self.store.next_task())
+            self.store.close()
+            self.store = Store(self.path / "db.sqlite")
+            self.now += 600
+            self.store.recover()
+            self.assertIsNone(self.store.next_task())
+            self.now += 300
+            self.assertEqual(self.store.next_task()["id"], first["id"])
+            self.store.finish(first["id"], "COMPLETED")
+            # Crash after terminal commit but before worker finally releases.
+            self.store.close()
+            self.store = Store(self.path / "db.sqlite")
+            self.store.recover()
+            self.assertIsNone(self.store.next_task())
+            self.now += 300
+            self.assertNotEqual(self.store.next_task()["id"], first["id"])
+
+    async def test_retry_delay_and_cooldown_both_apply(self):
+        await self.execute(1)
+        worker = self.cooldown_worker()
+        with patch("jmemby.db.store.time.time", side_effect=lambda: self.now):
+            with patch.object(worker, "execute", side_effect=JobError("RATE_LIMIT", "wait", True, 600)):
+                await worker.run_once()
+            self.assertEqual(self.store.tasks()[0]["status"], "RETRY_WAIT")
+            self.now += 300
+            self.assertIsNone(self.store.next_task())
+            self.now += 300
+            self.assertIsNotNone(self.store.next_task())
+
+    async def test_cooldown_keeps_manual_queue_and_cancellation_responsive(self):
+        run_id = await self.execute(2)
+        worker = self.cooldown_worker()
+        with patch("jmemby.db.store.time.time", side_effect=lambda: self.now):
+            with patch.object(worker, "execute", new_callable=AsyncMock):
+                await worker.run_once()
+                manual = self.store.submit(detail("4").manga, 1, 1)
+                self.assertTrue(await worker.run_once())
+                self.assertEqual(self.store.get(manual["id"])["status"], "COMPLETED")
+                self.assertFalse(await worker.run_once())
+                self.service.cancel_run(run_id, 1)
+                self.assertEqual(self.run_record(run_id)["status"], "CANCELLED")
+                self.assertEqual(self.service.pending_count(), 0)
+
+    async def test_shutdown_releases_reservation_and_keeps_cooldown(self):
+        await self.execute(1)
+        worker = self.cooldown_worker()
+        with patch("jmemby.db.store.time.time", side_effect=lambda: self.now):
+            with patch.object(worker, "execute", side_effect=asyncio.CancelledError):
+                with self.assertRaises(asyncio.CancelledError):
+                    await worker.run_once()
+            self.store.recover()
+            self.assertIsNone(self.store.next_task())
+            self.now += 300
+            self.assertIsNotNone(self.store.next_task())
 
     async def test_full_pipeline_then_skip_imported_and_finish_summary(self):
         run_id = await self.execute(limit=1)

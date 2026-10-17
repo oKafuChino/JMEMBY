@@ -85,6 +85,11 @@ class Worker:
         except Exception as exc:
             logger.error("task_failure task=%s exception_type=%s", task["id"], type(exc).__name__)
             self.store.finish(task["id"], "FAILED", "INTERNAL", "内部错误，请检查服务日志")
+        finally:
+            if task.get("origin") == "schedule":
+                # Persist the gap after every attempt, including retries and
+                # shutdown. Do not sleep here: the bot and queue stay responsive.
+                self.store.release_scheduled_download(task["id"])
         return True
 
     async def execute(self, task):

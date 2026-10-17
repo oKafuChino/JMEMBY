@@ -11,6 +11,7 @@ from jmemby.domain.models import Chapter, Manga, Page, normalize_tags
 from jmemby.storage.cbz import chapter_filename, library_directory
 
 TERMINAL = ("COMPLETED", "FAILED", "CANCELLED")
+SCHEDULE_DOWNLOAD_INTERVAL = 300
 
 
 def decode_manga(raw):
@@ -259,13 +260,39 @@ class Store:
                 self.finish(task_id, "CANCELLED", "CANCELLED", "任务已取消；已发布文件保留")
 
     def recover(self):
-        self.connection.execute("UPDATE tasks SET status='QUEUED' WHERE status IN ('DOWNLOADING','PACKAGING','IMPORT_PENDING')")
+        with self.transaction() as db:
+            active = db.execute("SELECT value FROM settings WHERE key='schedule_active_download'").fetchone()
+            if active:
+                # A process may have stopped before recording completion. Wait
+                # a full interval before resuming automatic work after recovery.
+                self._release_scheduled_download(db, active[0])
+            db.execute("UPDATE tasks SET status='QUEUED' WHERE status IN ('DOWNLOADING','PACKAGING','IMPORT_PENDING')")
+
+    def _release_scheduled_download(self, db, task_id):
+        active = db.execute("SELECT value FROM settings WHERE key='schedule_active_download'").fetchone()
+        if not active or active[0] != task_id:
+            return
+        db.execute("INSERT INTO settings(key,value) VALUES ('schedule_download_after',?) "
+                   "ON CONFLICT(key) DO UPDATE SET value=MAX(CAST(settings.value AS REAL),CAST(excluded.value AS REAL))",
+                   (str(time.time() + SCHEDULE_DOWNLOAD_INTERVAL),))
+        db.execute("DELETE FROM settings WHERE key='schedule_active_download'")
+
+    def release_scheduled_download(self, task_id):
+        with self.transaction() as db:
+            self._release_scheduled_download(db, task_id)
 
     def next_task(self):
         with self.transaction() as db:
+            now = time.time()
             row = db.execute("SELECT * FROM tasks WHERE status IN ('QUEUED','RETRY_WAIT','CANCEL_REQUESTED') "
-                             "AND (next_at<=? OR cancel_requested=1) ORDER BY queue_sequence LIMIT 1", (time.time(),)).fetchone()
+                             "AND (next_at<=? OR cancel_requested=1) "
+                             "AND (origin!='schedule' OR cancel_requested=1 OR ("
+                             "NOT EXISTS (SELECT 1 FROM settings WHERE key='schedule_active_download') AND "
+                             "COALESCE((SELECT CAST(value AS REAL) FROM settings WHERE key='schedule_download_after'),0)<=?)) "
+                             "ORDER BY queue_sequence LIMIT 1", (now, now)).fetchone()
             if row:
+                if row["origin"] == "schedule" and not row["cancel_requested"]:
+                    db.execute("INSERT INTO settings(key,value) VALUES ('schedule_active_download',?)", (row["id"],))
                 self.update(row["id"], status="DOWNLOADING")
                 return self.get(row["id"])
 

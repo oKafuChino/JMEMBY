@@ -55,8 +55,8 @@ Docker Compose 和镜像构建尚未在当前机器验证（本机无 Docker）�
 
 ## 定时标签下载升级
 
-本次升级增加 tzdata 依赖和 schema 5，需要重新构建 app 镜像。升级前一致性备份 `data/app`（包含数据库与 account.key）；启动会自动迁移 schema 1–4。新计划默认暂停，不会因升级自行开始下载。旧版本不支持 schema 5，回滚时需要恢复升级前备份。
+定时功能使用 tzdata 依赖和 schema 5，更新代码后需要重新构建 app 镜像。升级前一致性备份 `data/app`（包含数据库与 account.key）；启动会自动迁移 schema 1–4。新创建计划默认启用，旧暂停计划保持暂停。每次上限 50 部，自动下载每部处理结束后间隔 5 分钟；等待状态存入现有 settings 表，不增加 schema 版本。旧版本不支持 schema 5，回滚时需要恢复升级前备份。
 
 定时服务与 Bot/worker 同进程，只运行一个 app 实例；不需要额外 cron 或开放端口。`SCHEDULE_DEFAULT_TIMEZONE=Asia/Hong_Kong` 仅影响新建计划，已保存时区不变；容器/宿主机本地时区无需跟着修改。
 
-升级后先运行项目检查并通过管理员 `/schedule_add` 创建未来几分钟的单次计划，使用 `/schedule_preview ID` 核对排序和 AI 排除，再启用进行小样本验收。指定时间代表选书开始，不保证当时立即下载。`/status` 提供调度心跳、启用数量与最近运行状态。验收步骤和已知限制见 [定时功能验收记录](SCHEDULE_VALIDATION.md)。
+升级后先运行项目检查并通过管理员 `/schedule_add` 创建未来几分钟的单次计划，完成后即启用。可在到点前使用 `/schedule_preview ID` 核对排序和 AI 排除；需要停止时用 `/schedule_pause ID`。小样本至少选择两部，核对上一部处理结束到下一部开始相隔至少 5 分钟，并在等待期间重启验证剩余等待保留。指定时间代表选书开始，不保证当时立即下载。`/status` 提供调度心跳、启用数量与最近运行状态。验收步骤和已知限制见 [定时功能验收记录](SCHEDULE_VALIDATION.md)。

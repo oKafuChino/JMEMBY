@@ -37,12 +37,12 @@ class ScheduleService:
         tags = parse_tags(tag)
         tag = "、".join(tags)
         spec = dict(spec, tags=tags)
-        if type(limit) is not int or not 1 <= limit <= 20:
-            raise ValueError("每次数量须为 1–20")
+        if type(limit) is not int or not 1 <= limit <= 50:
+            raise ValueError("每次数量须为 1–50")
         next_at = next_time(spec, self.clock())
         if next_at is None:
             raise ValueError("指定时间已过期或不存在")
-        cursor = self.db.execute("INSERT INTO schedules(owner_user_id,chat_id,tag,spec,item_limit,next_run_at,created_at) VALUES (?,?,?,?,?,?,?)",
+        cursor = self.db.execute("INSERT INTO schedules(owner_user_id,chat_id,tag,spec,item_limit,next_run_at,created_at,enabled) VALUES (?,?,?,?,?,?,?,1)",
                                  (actor, actor, tag, json.dumps(spec), limit, next_at, self.clock()))
         return self.owned(cursor.lastrowid, actor)
 
