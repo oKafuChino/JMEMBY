@@ -84,6 +84,8 @@ docker compose up -d app
 
 ## 运维
 
+内置 JM 下载器按章节批量执行：每批复用一个客户端和一次章节详情请求，逐页下载并校验落盘，不再为每页重复请求章节详情。自动重试复用同一任务内有效图片，只请求缺失页。批量模式采用串行图片下载，`DOWNLOAD_CONCURRENCY` 仅作用于自定义逐页适配器；每批最长运行一小时，仍支持取消和任务磁盘检查。批量运行期间显示剩余页数，结束后更新进度。
+
 磁盘空间阈值检查暂时默认关闭（`DISK_SPACE_CHECK_ENABLED=false`），旧 `.env` 未设置此项时也关闭。此前因阈值暂停的任务会自动重新排队。需要恢复时设置为 `true`，继续使用 `MIN_FREE_SPACE_GB` / `RESUME_FREE_SPACE_GB`。真实磁盘写满仍会让任务失败，可在释放空间后手动重试。单页和单任务体积上限不受此开关影响。
 
 Bot 提示数据源失败时，可独立查询漫画元数据（不下载图片）：
@@ -126,6 +128,8 @@ docker compose exec app python -m jmemby.main backup --destination /app-data/bac
 备份目标必须不存在。Komga 数据库按停机方式备份 `data/komga`；漫画在 `data/storage/library`。升级前备份全部数据库及 `.env`；不要直接复制运行中的 SQLite 主文件而忽略 WAL。更改 `.env` 后用 `docker compose up -d --force-recreate app` 应用配置。
 
 ## 开发与测试
+
+本轮安全和可靠性修复及已知限制见 [2026-10-17 审查记录](docs/REVIEW_2026-10-17.md)。
 
 ```bash
 python -m venv .venv

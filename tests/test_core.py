@@ -69,6 +69,51 @@ class FakeKomga:
 
 
 class CoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sdk_scratch_file_does_not_poison_resume(self):
+        task = self.submit()
+        record = self.store.chapters(task["id"])[0]
+        stage = self.worker.staging / task["id"] / str(record["id"])
+        stage.mkdir(parents=True)
+        (stage / "000001.decoded.jpg").write_bytes(b"interrupted SDK output")
+        await self.worker.run_once()
+        self.assertEqual(self.store.get(task["id"])["status"], "COMPLETED")
+
+    def test_long_unicode_names_fit_linux_component_limit(self):
+        from jmemby.storage.cbz import library_directory, chapter_filename
+        item = replace(manga(), title="漫" * 300, source_id="章" * 100)
+        chapter = replace(item.chapters[0], title="漫" * 300, source_id="章" * 100)
+        for name in (library_directory(Path(), item).name, chapter_filename(chapter)):
+            self.assertLessEqual(len(name.encode("utf-8")), 255)
+
+    def test_cancel_waiting_task_finishes_without_worker(self):
+        task = self.submit()
+        self.store.request_cancel(task["id"], 1)
+        self.assertEqual(self.store.get(task["id"])["status"], "CANCELLED")
+        self.assertEqual(len(self.store.notifications()), 1)
+
+    def test_cross_user_submission_does_not_return_another_users_task(self):
+        self.submit()
+        with self.assertRaises(ValueError):
+            self.store.submit(manga(), 2, 2)
+
+    def test_packaging_honors_configured_pixel_limit(self):
+        stage = self.root / "limited-stage"
+        stage.mkdir()
+        (stage / "000001.png").write_bytes(png())
+        chapter = replace(manga().chapters[0], pages=(Page(1, "fixture"),))
+        target = self.root / "limited.cbz"
+        with self.assertRaises(JobError):
+            create_cbz(stage, target, manga(), chapter, max_pixels=1)
+        self.assertFalse(target.exists())
+
+    async def test_source_child_does_not_receive_other_service_secrets(self):
+        code = "import os,json; print(json.dumps({k:os.getenv(k) for k in ['TELEGRAM_BOT_TOKEN','KOMGA_PASSWORD','JM_API_DOMAINS']}))"
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "secret", "KOMGA_PASSWORD": "secret", "JM_API_DOMAINS": "test"}):
+            result = await CommandProvider(json.dumps([sys.executable, "-c", code])).request({})
+        self.assertIsNone(result["TELEGRAM_BOT_TOKEN"])
+        self.assertIsNone(result["KOMGA_PASSWORD"])
+        self.assertEqual(result["JM_API_DOMAINS"], "test")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -245,6 +290,24 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         await self.worker.run_once()
         self.assertEqual(self.store.get(task["id"])["status"], "FAILED")
         self.assertFalse(list(self.worker.library.rglob("*.cbz")))
+
+    async def test_batch_retry_requests_only_missing_pages(self):
+        calls = []
+        async def batch(pages, stage, max_bytes, max_pixels, budget):
+            calls.append([p.number for p in pages])
+            for page in pages:
+                if len(calls) == 1 and page.number == 2:
+                    raise JobError("NETWORK", "offline", True)
+                (stage / f"{page.number:06d}.png").write_bytes(png())
+        self.provider.download_batch = batch
+        task = self.submit()
+        await self.worker.run_once()
+        self.assertEqual(self.store.get(task["id"])["status"], "RETRY_WAIT")
+        self.store.update(task["id"], next_at=0)
+        await self.worker.run_once()
+        self.assertEqual(calls, [[1, 2], [2]])
+        self.assertEqual(self.provider.downloads, 0)
+        self.assertEqual(self.store.get(task["id"])["status"], "COMPLETED")
 
     async def test_disabled_disk_check_resumes_paused_task_without_reading_free_space(self):
         task = self.submit()

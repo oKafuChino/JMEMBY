@@ -36,6 +36,56 @@ class SDK:
 
 
 class AdapterTests(unittest.TestCase):
+    def test_disk_full_sdk_error_is_not_retried_as_network(self):
+        import errno
+        result = classify_error(OSError(errno.ENOSPC, "full"), "image_download_decode")
+        self.assertEqual(result["error"]["code"], "DISK_FULL")
+
+    def test_secure_config_write_ignores_predictable_temp_symlink(self):
+        spec = importlib.util.spec_from_file_location("configure_audit", Path(__file__).parents[1] / "scripts/configure.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            decoy = root / ".env.install.tmp"
+            decoy.write_text("do not overwrite")
+            with patch.object(module, "ROOT", root), patch.object(module, "ENV", root / ".env"):
+                module.save({"TOKEN": "test"})
+            self.assertEqual(decoy.read_text(), "do not overwrite")
+            self.assertEqual(module.parse((root / ".env").read_text()), {"TOKEN": "test"})
+
+    def test_batch_reuses_chapter_and_preserves_pages_on_failure(self):
+        from PIL import Image
+        class BatchSDK(SDK):
+            refreshes = 0
+            downloads = 0
+            fail = True
+            def get_photo_detail(self, photo_id):
+                self.refreshes += 1
+                return Photo()
+            def download_by_image_detail(self, image, path):
+                self.downloads += 1
+                if image == "image1" and self.fail:
+                    raise ConnectionError("offline")
+                Image.new("RGB", (8, 8)).save(path, "JPEG")
+        client = BatchSDK()
+        with tempfile.TemporaryDirectory() as root:
+            request = {"operation": "download_batch", "pages": [
+                {"url": "jm:52:0", "number": 1}, {"url": "jm:52:1", "number": 2}],
+                "directory": root, "max_bytes": 10000, "max_pixels": 1000, "budget": 20000}
+            with self.assertRaises(StageError):
+                handle(request, client)
+            self.assertEqual(client.refreshes, 1)
+            first = Path(root) / "000001.jpg"
+            before = first.read_bytes()
+            client.fail = False
+            request["pages"] = request["pages"][1:]
+            self.assertEqual(handle(request, client), {})
+            self.assertEqual(client.refreshes, 2)
+            self.assertEqual(client.downloads, 3)
+            self.assertEqual(first.read_bytes(), before)
+            self.assertTrue((Path(root) / "000002.jpg").exists())
+
     def test_download_error_identifies_refresh_or_image_stage(self):
         class ResponseUnexpectedException(Exception):
             pass

@@ -14,9 +14,15 @@ from jmemby.domain.models import Chapter, Manga, Page
 class CommandProvider:
     source = "jmcomic"
 
+    def child_environment(self):
+        return {key: value for key, value in os.environ.items()
+                if not key.startswith(("TELEGRAM_", "KOMGA_"))}
+
     def error_message(self, code):
         return {
             "TIMEOUT": "禁漫请求超时，请检查 VPS 到数据源的连接。",
+            "DISK_FULL": "磁盘已满，释放空间后可手动重试。",
+            "SIZE_LIMIT": "下载内容超出大小限制。",
             "NETWORK": "禁漫网络连接失败，请检查 DNS、代理及 TLS 连接。",
             "RATE_LIMIT": "禁漫请求被限流，请稍后重试。",
             "SERVER_ERROR": "禁漫服务暂时不可用，请稍后重试。",
@@ -34,14 +40,14 @@ class CommandProvider:
             raise ValueError("PROVIDER_COMMAND must be a nonempty JSON argv list")
         self.timeout = timeout
 
-    async def request(self, request: dict) -> dict:
+    async def request(self, request: dict, timeout: int | None = None) -> dict:
         kwargs = {"start_new_session": True} if os.name != "nt" else {}
         process = await asyncio.create_subprocess_exec(
             *self.argv, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL, **kwargs,
+            stderr=asyncio.subprocess.DEVNULL, env=self.child_environment(), **kwargs,
         )
         try:
-            async with asyncio.timeout(self.timeout):
+            async with asyncio.timeout(self.timeout if timeout is None else timeout):
                 process.stdin.write(json.dumps(request).encode() + b"\n")
                 await process.stdin.drain()
                 process.stdin.close()
@@ -59,6 +65,8 @@ class CommandProvider:
                 raise ValueError("object expected")
             if "error" in result:
                 error = result["error"]
+                if not isinstance(error, dict):
+                    raise ValueError("error must be an object")
                 code = error.get("code", "PROVIDER_FAILED")
                 if not isinstance(code, str) or not re.fullmatch(r"[A-Z_]{1,64}", code):
                     code = "PROVIDER_FAILED"
@@ -105,8 +113,10 @@ class CommandProvider:
     async def get_pages(self, chapter_id: str) -> tuple[Page, ...]:
         result = await self.request({"operation": "pages", "chapter_id": chapter_id})
         try:
+            if not isinstance(result.get("pages"), list) or not all(isinstance(url, str) and url for url in result["pages"]):
+                raise ValueError("pages must be a list of nonempty strings")
             return tuple(Page(i, str(url)) for i, url in enumerate(result["pages"], 1))
-        except (KeyError, TypeError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             raise JobError("PROVIDER_PROTOCOL", "数据源页清单不正确") from exc
 
     async def download(self, page: Page, destination: Path, max_bytes: int):

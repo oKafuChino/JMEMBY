@@ -12,6 +12,7 @@ from jmemby.domain.errors import JobError
 from jmemby.db.store import Store
 from jmemby.integrations.komga.bridge import KomgaBridge
 from jmemby.providers.command import CommandProvider
+from jmemby.providers.builtin import JmProvider
 from jmemby.runtime import JsonFormatter, backup_database, database_path, instance_lock
 from jmemby.services.tasks import TaskService
 from jmemby.workers.queue import Worker
@@ -20,7 +21,8 @@ from jmemby.workers.queue import Worker
 async def run(settings, db_path):
     from aiogram import Bot
     from jmemby.bot.app import create_dispatcher, notifications
-    provider = CommandProvider(settings.provider_command, settings.operation_timeout)
+    provider_type = CommandProvider if os.getenv("PROVIDER_COMMAND") else JmProvider
+    provider = provider_type(settings.provider_command, settings.operation_timeout)
     komga = KomgaBridge(komga_command(), settings.operation_timeout)
     store = Store(db_path)
     bot = Bot(settings.telegram_bot_token)

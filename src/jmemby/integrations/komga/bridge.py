@@ -4,9 +4,14 @@ This intentionally shares the cancellable JSON process transport. There are no
 guessed HTTP endpoints in the application. See PROVIDER_PROTOCOL.md.
 """
 from jmemby.providers.command import CommandProvider
+import os
 
 
 class KomgaBridge(CommandProvider):
+    def child_environment(self):
+        return {key: value for key, value in os.environ.items()
+                if not key.startswith(("TELEGRAM_", "JM_", "PROVIDER_"))}
+
     def error_message(self, code):
         return {
             "KOMGA_AUTH": "Komga 登录失败（HTTP 401），请检查管理员邮箱和密码。",

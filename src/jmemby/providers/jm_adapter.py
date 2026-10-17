@@ -8,6 +8,8 @@ import sys
 from importlib.metadata import PackageNotFoundError, version
 import traceback
 import time
+import errno
+import tempfile
 
 
 class StageError(Exception):
@@ -35,7 +37,9 @@ def classify_error(exc, phase):
     lower = " ".join(names).lower()
     statuses = [getattr(getattr(item, "response", None), "status_code", None) for item in chain]
     status = next((s for s in statuses if isinstance(s, int) and 100 <= s <= 599), None)
-    if status == 429:
+    if any(isinstance(item, OSError) and item.errno == errno.ENOSPC for item in chain):
+        code = "DISK_FULL"
+    elif status == 429:
         code = "RATE_LIMIT"
     elif status in (401, 403):
         code = "JM_ACCESS_DENIED"
@@ -98,6 +102,39 @@ def initialize_client():
 
 def handle(request, client):
     operation = request["operation"]
+    if operation == "download_batch":
+        from jmemby.storage.cbz import validate_image
+        entries = request["pages"]
+        parsed = [re.fullmatch(r"jm:([0-9]+):([0-9]+)", entry["url"]) for entry in entries]
+        if not entries or any(m is None for m in parsed) or len({m[1] for m in parsed}) != 1:
+            raise ValueError("Batch must contain exactly one chapter")
+        if any(type(e["number"]) is not int or e["number"] <= 0 for e in entries):
+            raise ValueError("Invalid page number")
+        photo = at_stage("download_photo_refresh", client.get_photo_detail, parsed[0][1])
+
+        class ChapterClient:
+            def get_photo_detail(self, chapter_id):
+                return photo
+
+            def download_by_image_detail(self, image, path):
+                return client.download_by_image_detail(image, path)
+
+        cached = ChapterClient()
+        budget = int(request["budget"])
+        for entry in entries:
+            number = entry["number"]
+            destination = Path(request["directory"]) / f"{number:06d}.part"
+            result = handle({"operation": "download", "url": entry["url"],
+                             "destination": str(destination), "max_bytes": request["max_bytes"]}, cached)
+            if "error" in result:
+                return result
+            extension = validate_image(destination, request["max_bytes"], request["max_pixels"])
+            budget -= destination.stat().st_size
+            if budget < 0:
+                destination.unlink(missing_ok=True)
+                return {"error": {"code": "SIZE_LIMIT"}}
+            destination.replace(destination.with_suffix(extension))
+        return {}
     if operation == "metadata":
         album = at_stage("album_metadata", client.get_album_detail, request["id"])
         return {"title": album.name, "authors": list(album.authors),
@@ -118,7 +155,9 @@ def handle(request, client):
             raise ValueError("Invalid size limit")
         # The SDK performs JM image descrambling. Use an image extension because
         # Pillow-based SDK decoders may infer output format from the path.
-        decoded = destination.with_suffix(".decoded.jpg")
+        descriptor, decoded_name = tempfile.mkstemp(prefix=".decode-", suffix=".jpg", dir=destination.parent)
+        os.close(descriptor)
+        decoded = Path(decoded_name)
         try:
             at_stage("image_download_decode", client.download_by_image_detail, image, str(decoded))
             if not decoded.is_file() or not 0 < decoded.stat().st_size <= limit:

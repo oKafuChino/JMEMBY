@@ -11,7 +11,7 @@ import time
 from jmemby.db.store import decode_manga
 from jmemby.domain.errors import Cancelled, DiskLow, JobError
 from jmemby.domain.models import Page
-from jmemby.storage.cbz import contained, create_cbz, validate_cbz, validate_image
+from jmemby.storage.cbz import contained, create_cbz, validate_cbz, validate_image, staged_pages
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +103,9 @@ class Worker:
                 if not pages or len(pages) > self.settings.max_chapter_pages:
                     raise JobError("PAGE_LIMIT", "章节为空或页数超出限制")
                 self.store.update_chapter(record["id"], pages=json.dumps([asdict(p) for p in pages]))
+            if (not pages or len(pages) > self.settings.max_chapter_pages
+                    or [p.number for p in pages] != list(range(1, len(pages) + 1))):
+                raise JobError("BAD_PAGES", "章节页清单为空、超限或页序无效")
             chapter = replace(chapter, pages=pages)
             target = contained(self.library, record["path"])
             stage = contained(self.staging, f"{task_id}/{record['id']}")
@@ -111,12 +114,37 @@ class Worker:
                 stage.mkdir(parents=True, exist_ok=True)
                 self.store.update(task_id, status="DOWNLOADING", phase="download")
                 semaphore = asyncio.Semaphore(self.settings.download_concurrency)
+                if hasattr(self.provider, "download_batch"):
+                    pending, staged_bytes = [], 0
+                    for page in pages:
+                        candidates = staged_pages(stage, page.number)
+                        if len(candidates) > 1:
+                            raise JobError("BAD_IMAGE", "存在重复页文件，请检查临时目录")
+                        valid = False
+                        if len(candidates) == 1:
+                            try:
+                                validate_image(candidates[0], self.settings.max_page_bytes, self.settings.max_pixels)
+                                staged_bytes += candidates[0].stat().st_size
+                                valid = True
+                            except JobError:
+                                candidates[0].unlink()
+                        if not valid:
+                            pending.append(page)
+                    budget = self.settings.max_task_bytes - total_bytes - staged_bytes
+                    if budget < 0:
+                        raise JobError("SIZE_LIMIT", "任务体积超出限制")
+                    if pending:
+                        self.store.update(task_id, progress=f"章节 {chapter.ordinal}/{len(records)}：批量下载剩余 {len(pending)} 页")
+                        await self.guarded(task_id, self.provider.download_batch(
+                            pending, stage, self.settings.max_page_bytes, self.settings.max_pixels, budget))
 
                 async def download(page):
                     async with semaphore:
                         nonlocal total_bytes
                         self.check(task_id)
-                        candidates = [p for p in stage.glob(f"{page.number:06d}.*") if p.suffix != ".part"]
+                        candidates = staged_pages(stage, page.number)
+                        if len(candidates) > 1:
+                            raise JobError("BAD_IMAGE", "存在重复页文件，请检查临时目录")
                         existing = None
                         if len(candidates) == 1:
                             try:
@@ -150,7 +178,7 @@ class Worker:
                 self.check(task_id)
                 # Packaging is synchronous and cannot be cancelled halfway through publication.
                 self.store.update(task_id, status="PACKAGING")
-                create_cbz(stage, target, manga, chapter)
+                create_cbz(stage, target, manga, chapter, self.settings.max_page_bytes, self.settings.max_pixels)
             size, checksum = validate_cbz(target, manga, chapter, self.settings.max_page_bytes, self.settings.max_pixels)
             if was_existing:
                 total_bytes += size

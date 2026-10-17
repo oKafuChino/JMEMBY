@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import zipfile
+import tempfile
 from PIL import Image
 
 from jmemby.domain.errors import JobError
@@ -19,7 +20,8 @@ _INVALID = re.compile(r"[<>:\"/\\|?*\x00-\x1f]")
 
 def safe_component(value: str, fallback: str = "untitled", limit: int = 120) -> str:
     cleaned = _INVALID.sub("_", value).strip().rstrip(".")
-    cleaned = re.sub(r"\s+", " ", cleaned)[:limit].strip().rstrip(".")
+    # Linux NAME_MAX is measured in bytes, not Unicode code points.
+    cleaned = re.sub(r"\s+", " ", cleaned).encode("utf-8")[:limit].decode("utf-8", errors="ignore").strip().rstrip(".")
     if cleaned.upper().split(".")[0] in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(10)), *(f"LPT{i}" for i in range(10))}:
         cleaned = "_" + cleaned
     return cleaned if cleaned not in ("", ".", "..") else fallback
@@ -45,6 +47,8 @@ def contained(root: Path, relative: str) -> Path:
 
 
 def validate_image(path: Path, max_bytes=30 * 1024 * 1024, max_pixels=50_000_000) -> str:
+    if path.is_symlink():
+        raise JobError("INVALID_PATH", "拒绝读取符号链接图片")
     if not path.is_file() or path.stat().st_size > max_bytes or path.stat().st_size == 0:
         raise JobError("BAD_IMAGE", "图片缺失或超过大小限制")
     try:
@@ -114,25 +118,34 @@ def comic_info(manga: Manga, chapter: Chapter) -> bytes:
     return xml.encode("utf-8")
 
 
-def create_cbz(staging: Path, destination: Path, manga: Manga, chapter: Chapter) -> None:
+def staged_pages(staging: Path, number: int):
+    """Only exact canonical page filenames; never include SDK scratch files."""
+    return [p for extension in (".jpg", ".png", ".webp")
+            if (p := staging / f"{number:06d}{extension}").exists() or p.is_symlink()]
+
+
+def create_cbz(staging: Path, destination: Path, manga: Manga, chapter: Chapter,
+               max_bytes=30 * 1024 * 1024, max_pixels=50_000_000) -> None:
     """Create and atomically publish a CBZ from validated staged page files."""
     if not chapter.pages or [p.number for p in chapter.pages] != list(range(1, len(chapter.pages) + 1)):
         raise JobError("BAD_PAGES", "章节为空或页序无效")
     if destination.exists():
-        validate_cbz(destination, manga, chapter)
+        validate_cbz(destination, manga, chapter, max_bytes, max_pixels)
         return
-    temporary = staging / "chapter.cbz.part"
+    descriptor, temporary_name = tempfile.mkstemp(prefix="chapter-", suffix=".cbz.part", dir=staging)
+    os.close(descriptor)
+    temporary = Path(temporary_name)
     try:
         with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED) as archive:
             for page in chapter.pages:
-                candidates = [p for p in staging.glob(f"{page.number:06d}.*") if p.suffix != ".part"]
+                candidates = staged_pages(staging, page.number)
                 if len(candidates) != 1:
                     raise JobError("BAD_IMAGE", f"缺少或重复图片 {page.number}")
-                extension = validate_image(candidates[0])
+                extension = validate_image(candidates[0], max_bytes, max_pixels)
                 archive.write(candidates[0], f"{page.number:06d}{extension}")
             archive.writestr("ComicInfo.xml", comic_info(manga, chapter))
             archive.writestr("jmemby.json", json.dumps(identity(manga, chapter)))
-        validate_cbz(temporary, manga, chapter)
+        validate_cbz(temporary, manga, chapter, max_bytes, max_pixels)
         with temporary.open("r+b") as stream:
             os.fsync(stream.fileno())
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -141,6 +154,6 @@ def create_cbz(staging: Path, destination: Path, manga: Manga, chapter: Chapter)
         try:
             os.link(temporary, destination)
         except FileExistsError:
-            validate_cbz(destination, manga, chapter)
+            validate_cbz(destination, manga, chapter, max_bytes, max_pixels)
     finally:
         temporary.unlink(missing_ok=True)

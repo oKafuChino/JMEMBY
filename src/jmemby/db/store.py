@@ -176,6 +176,8 @@ class Store:
         active = db.execute("SELECT * FROM tasks WHERE manga_id=? AND status NOT IN ('COMPLETED','FAILED','CANCELLED')",
                             (record["id"],)).fetchone()
         if active:
+            if active["user_id"] != user_id:
+                raise ValueError("该漫画已有其他用户的下载任务，请稍后再试")
             return dict(active)
         task_id, now = uuid.uuid4().hex, time.time()
         db.execute("INSERT INTO tasks(id,manga_id,snapshot,user_id,chat_id,retry_of,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
@@ -195,6 +197,8 @@ class Store:
             raise ValueError("任务不存在")
         if task["status"] not in TERMINAL:
             self.update(task_id, cancel_requested=1, status="CANCEL_REQUESTED")
+            if task["status"] in ("QUEUED", "RETRY_WAIT", "PAUSED_DISK"):
+                self.finish(task_id, "CANCELLED", "CANCELLED", "任务已取消；已发布文件保留")
 
     def recover(self):
         self.connection.execute("UPDATE tasks SET status='QUEUED' WHERE status IN ('DOWNLOADING','PACKAGING','IMPORT_PENDING')")
