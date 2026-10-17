@@ -10,6 +10,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.exceptions import TelegramRetryAfter
 
 from jmemby.domain.errors import JobError
+from jmemby.domain.schedule_tags import parse_tags, schedule_tags
 from jmemby.services.discovery import DiscoveryService
 from jmemby.bot.presentation import normalize
 from jmemby.services.schedule_display import reason_label, SORT_LABELS
@@ -25,7 +26,9 @@ def describe_schedule(row):
     local = datetime.fromtimestamp(next_at, ZoneInfo(spec["timezone"])).isoformat() if next_at else "无"
     kind = {"once": "单次", "daily": "每日", "weekly": "每周"}[spec["kind"]]
     weekday = f"星期{spec['weekday']}" if spec["kind"] == "weekly" else ""
-    return (f"计划 #{row['id']} | {'启用' if row['enabled'] else '暂停'}\n标签：{row['tag']}\n"
+    tags = schedule_tags(row)
+    label = "标签（匹配任一）" if len(tags) > 1 else "标签"
+    return (f"计划 #{row['id']} | {'启用' if row['enabled'] else '暂停'}\n{label}：{'、'.join(tags)}\n"
             f"{kind} {spec.get('date', '')} {weekday} {spec['time']} {spec['timezone']}\n"
             f"每次最多 {row['item_limit']} 部；AI 标记强制排除\n下一次：{local}")
 
@@ -33,15 +36,17 @@ def describe_schedule(row):
 def create_schedule_router(service, settings):
     router = Router(name="schedules")
 
-    def matches(message):
+    async def matches(message):
+        # aiogram dispatches synchronous filters to a thread pool. SQLite must
+        # remain on the event-loop thread that owns this connection.
         text = normalize(message.text or "")
         command = text.split(maxsplit=1)[0].split("@")[0] if text else ""
         if command in COMMANDS:
             return True
         if not text or text.startswith("/") or not message.from_user:
             return False
-        return service.db.execute("SELECT 1 FROM schedule_drafts WHERE owner_user_id=? AND expires>?",
-                                  (message.from_user.id, service.clock())).fetchone() is not None
+        return service.db.execute("SELECT 1 FROM schedule_drafts WHERE owner_user_id=?",
+                                  (message.from_user.id,)).fetchone() is not None
 
     def authorize(event):
         user = event.from_user
@@ -65,16 +70,17 @@ def create_schedule_router(service, settings):
                                  InlineKeyboardButton(text="确认", callback_data="sched:" + token)]]))
 
     async def wizard(message, actor, text):
-        row = service.db.execute("SELECT * FROM schedule_drafts WHERE owner_user_id=? AND expires>?", (actor, service.clock())).fetchone()
-        if not row:
+        row = service.db.execute("SELECT * FROM schedule_drafts WHERE owner_user_id=?", (actor,)).fetchone()
+        if not row or row["expires"] <= service.clock():
+            service.db.execute("DELETE FROM schedule_drafts WHERE owner_user_id=?", (actor,))
+            await message.answer("创建会话已过期，请发送 /schedule_add 重新开始。")
             return
         data = json.loads(row["data"])
         step = row["step"]
         if step == "tag":
-            if not text.strip() or len(text) > 100:
-                raise ValueError("标签须为 1–100 字符")
-            data["tag"] = text.strip()
-            step, prompt = "kind", "输入 once（单次）、daily（每日）或 weekly（每周）。"
+            data["tags"] = parse_tags(text)
+            step, prompt = "kind", (f"已接收标签：{'、'.join(data['tags'])}（匹配任一标签）。\n"
+                                    "输入 once（单次）、daily（每日）或 weekly（每周）。")
         elif step == "kind":
             if text not in {"once", "daily", "weekly"}:
                 raise ValueError("请输入 once、daily 或 weekly")
@@ -100,8 +106,9 @@ def create_schedule_router(service, settings):
                 raise ValueError("时间已过期或不存在，请 /schedule_add 重新创建")
             step, prompt = "limit", "输入每次最多新入队部数（1–20，建议 5）。"
         else:
-            spec = {k: v for k, v in data.items() if k != "tag"}
-            schedule = service.create(actor, data["tag"], spec, int(text))
+            spec = {k: v for k, v in data.items() if k not in {"tag", "tags"}}
+            tags = data["tags"] if "tags" in data else [data["tag"]]
+            schedule = service.create(actor, tags, spec, int(text))
             service.db.execute("DELETE FROM schedule_drafts WHERE owner_user_id=?", (actor,))
             await message.answer(describe_schedule(schedule) + f"\n已保存为暂停。先 /schedule_preview {schedule['id']}，再 /schedule_enable {schedule['id']}。")
             return
@@ -116,7 +123,9 @@ def create_schedule_router(service, settings):
             command = head.split("@")[0]
             if command == "/schedule_add":
                 service.db.execute("INSERT OR REPLACE INTO schedule_drafts VALUES (?,?,?,?)", (actor, "tag", "{}", service.clock() + 600))
-                await message.answer("请输入一个漫画标签（整个文本作为一个标签）。\n/schedule_cancel 退出创建。")
+                await message.answer("请输入 1–10 个漫画标签，用逗号、顿号或换行分隔，例如：冒险，科幻。\n"
+                                     "匹配任一标签即可，作品去重后共用每次数量；标签内空格保留。\n"
+                                     "多标签按精确点赞数合并排序，无法确认点赞数的作品跳过。\n/schedule_cancel 退出创建。")
             elif command == "/schedule_cancel":
                 service.db.execute("DELETE FROM schedule_drafts WHERE owner_user_id=?", (actor,))
                 await message.answer("已退出计划创建")
@@ -135,7 +144,7 @@ def create_schedule_router(service, settings):
 
                 async with asyncio.timeout(600):
                     async with service.discovery_lock:
-                        result = await DiscoveryService(service.provider, service.skip_async, service.clock).collect(row["tag"], row["item_limit"], check)
+                        result = await DiscoveryService(service.provider, service.skip_async, service.clock).collect(schedule_tags(row), row["item_limit"], check)
                 check()
                 selected = [i for i in result["items"] if i["decision"] == "ALLOW"][:row["item_limit"]]
                 counts = Counter(reason_label(i["reason"]) for i in result["items"] if i["decision"] != "ALLOW")

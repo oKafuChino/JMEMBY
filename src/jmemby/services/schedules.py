@@ -9,6 +9,7 @@ from pathlib import Path
 
 from jmemby.db.store import TERMINAL, decode_manga
 from jmemby.domain.discovery import POLICY_VERSION
+from jmemby.domain.schedule_tags import parse_tags
 from jmemby.services.schedule_time import next_time, latest_due
 from jmemby.storage.cbz import contained, validate_cbz
 from jmemby.domain.models import Page
@@ -33,9 +34,9 @@ class ScheduleService:
 
     def create(self, actor, tag, spec, limit=5):
         self.users.require_admin(actor)
-        tag = " ".join(tag.split())
-        if not tag or len(tag) > 100 or any(ord(c) < 32 for c in tag):
-            raise ValueError("请输入 1–100 字符的一个标签")
+        tags = parse_tags(tag)
+        tag = "、".join(tags)
+        spec = dict(spec, tags=tags)
         if type(limit) is not int or not 1 <= limit <= 20:
             raise ValueError("每次数量须为 1–20")
         next_at = next_time(spec, self.clock())

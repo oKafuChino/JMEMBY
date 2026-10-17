@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from jmemby.db.store import Store, SCHEMA
 from jmemby.domain.discovery import DiscoveryDetail, evaluate
+from jmemby.domain.schedule_tags import parse_tags, schedule_tags
 from jmemby.domain.errors import JobError
 from jmemby.domain.models import Manga, Chapter
 from jmemby.services.discovery import DiscoveryService
@@ -58,6 +59,26 @@ class Provider(FakeProvider):
 
 
 class PolicyTests(unittest.TestCase):
+    def test_multiple_tags_match_any_but_ai_always_blocks(self):
+        self.assertEqual(evaluate(detail(tags=("科幻",)), ["冒险", "科幻"])[0], "ALLOW")
+        self.assertEqual(evaluate(detail(tags=("大冒险",)), ["冒险", "科幻"])[0], "UNKNOWN")
+        self.assertEqual(evaluate(detail(tags=("科幻", "AI-generated")), ["冒险", "科幻"]),
+                         ("BLOCK", "AI_TAG"))
+
+    def test_tag_input_separators_dedup_and_spaces(self):
+        self.assertEqual(parse_tags("冒险，科幻\nＳｃｉ  Ｆｉ, sci fi、冒险"), ["冒险", "科幻", "Ｓｃｉ Ｆｉ"])
+        self.assertEqual(parse_tags("Sci Fi"), ["Sci Fi"])
+        self.assertEqual(parse_tags(["x,y", "x,y"]), ["x,y"])
+
+    def test_tag_input_limits(self):
+        for value in (" ,，\n", "x" * 101, [str(i) for i in range(11)], [1], None, "a\x00b"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parse_tags(value)
+
+    def test_legacy_snapshot_literal_tag_is_not_split(self):
+        self.assertEqual(schedule_tags({"tag": "Sci Fi, Fantasy", "spec": "{}"}), ["Sci Fi, Fantasy"])
+        self.assertEqual(schedule_tags({"tag": "display", "spec": '{"tags":["A","B"]}'}), ["A", "B"])
+
     def test_explicit_ai_variants(self):
         for marker in ("ai-generate", "AI GENERATED", "ＡＩ－ｇｅｎｅｒａｔｅｄ", "ai_generated", "AI生成", "ai–generated"):
             with self.subTest(marker=marker):
@@ -199,6 +220,115 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["mode"], "SOURCE_LIKES_DESC")
         self.assertEqual(self.store.connection.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 0)
         self.assertEqual(self.store.connection.execute("SELECT COUNT(*) FROM auto_download_claims").fetchone()[0], 0)
+
+    def test_multitag_persistence_and_snapshot_compatibility(self):
+        s = self.service.create(1, "冒险，科幻\n冒险", self.spec, 2)
+        self.assertNotIn("tags", self.spec)
+        self.assertEqual(schedule_tags(s), ["冒险", "科幻"])
+        run = self.run_record(self.start(s))
+        self.assertEqual(schedule_tags(json.loads(run["snapshot"])), ["冒险", "科幻"])
+        self.store.connection.execute("UPDATE schedules SET spec=? WHERE id=?", (json.dumps(self.spec), s["id"]))
+        self.assertEqual(schedule_tags(json.loads(run["snapshot"])), ["冒险", "科幻"])
+
+    async def test_multitag_union_dedup_exact_order_shared_limit_and_worker(self):
+        pages = {"冒险": ["1", "3"], "科幻": ["1", "2", "4"]}
+        self.provider.details.update({
+            "1": detail("1", likes=10), "2": detail("2", tags=("科幻",), likes=100),
+            "3": detail("3", tags=("冒险", "AI-generated"), likes=1000),
+            "4": replace(detail("4", tags=("科幻",)), likes_raw="1K", likes_exact=None)})
+        calls, details = [], []
+        async def search(tag, page):
+            calls.append((tag, page))
+            return {"ids": pages[tag], "last": True, "mode": "SOURCE_LIKES_DESC", "scope": "all"}
+        async def get_detail(source_id):
+            details.append(source_id)
+            return self.provider.details[source_id]
+        self.provider.search_tag, self.provider.get_discovery_detail = search, get_detail
+        run_id = self.start(self.service.create(1, ["冒险", "科幻"], self.spec, 2))
+        await self.scheduler.process(self.run_record(run_id))
+        tasks = self.store.connection.execute("SELECT * FROM tasks ORDER BY queue_sequence").fetchall()
+        self.assertEqual([json.loads(t["snapshot"])["source_id"] for t in tasks], ["2", "1"])
+        self.assertEqual(calls, [("冒险", 1), ("科幻", 1)])
+        self.assertEqual(len(details), len(set(details)))
+        reasons = dict(self.store.connection.execute("SELECT source_id,reason FROM schedule_run_items"))
+        self.assertEqual(reasons["3"], "AI_TAG")
+        self.assertEqual(reasons["4"], "LIKES_UNKNOWN")
+        self.assertEqual(json.loads(self.run_record(run_id)["stats"])["mode"], "EXACT_LIKES_DESC")
+        settings = Settings("secret", frozenset({1}), "sqlite+aiosqlite:///unused", str(self.path), "http://komga", "", "lib", "/data")
+        worker = Worker(self.store, self.provider, FakeKomga(), settings)
+        await worker.run_once()
+        self.assertEqual(self.store.get(tasks[0]["id"])["status"], "COMPLETED")
+        self.provider.details["1"] = detail("1", tags=("冒险", "ai-generate"))
+        before = self.provider.downloads
+        await worker.run_once()
+        self.assertEqual(self.store.get(tasks[1]["id"])["error_code"], "CONTENT_EXCLUDED")
+        self.assertEqual(self.provider.downloads, before)
+
+    async def test_multitag_shared_page_budget_round_robin(self):
+        calls = []
+        async def search(tag, page):
+            calls.append((tag, page))
+            source_id = str(len(calls))
+            self.provider.details[source_id] = detail(source_id, likes=len(calls))
+            return {"ids": [source_id], "last": False, "mode": "SOURCE_LIKES_DESC", "scope": "all"}
+        self.provider.search_tag = search
+        result = await DiscoveryService(self.provider, self.service.skip).collect(["冒险", "科幻"], 1)
+        self.assertEqual(calls, [(tag, page) for page in range(1, 6) for tag in ("冒险", "科幻")])
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["items"][0]["source_id"], "10")
+
+    async def test_cross_tag_overlap_does_not_stop_later_pages(self):
+        pages = {"冒险": [["1"]], "科幻": [["1"], ["2"]]}
+        calls = []
+        async def search(tag, page):
+            calls.append((tag, page))
+            return {"ids": pages[tag][page - 1], "last": page == len(pages[tag]),
+                    "mode": "SOURCE_LIKES_DESC", "scope": "all"}
+        self.provider.search_tag = search
+        result = await DiscoveryService(self.provider, self.service.skip).collect(["冒险", "科幻"], 2)
+        self.assertEqual(calls, [("冒险", 1), ("科幻", 1), ("科幻", 2)])
+        self.assertEqual(len(result["items"]), 2)
+        self.assertFalse(result["truncated"])
+
+    async def test_multitag_repeated_page_stops_only_that_tag(self):
+        calls = []
+        async def search(tag, page):
+            calls.append((tag, page))
+            return {"ids": ["1"] if tag == "冒险" else [str(page + 1)],
+                    "last": tag == "科幻" and page == 3, "mode": "SOURCE_LIKES_DESC", "scope": "all"}
+        self.provider.search_tag = search
+        result = await DiscoveryService(self.provider, self.service.skip).collect(["冒险", "科幻"], 2)
+        self.assertEqual(len(result["items"]), 4)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(calls[-1], ("科幻", 3))
+
+    async def test_multitag_candidate_budget_and_scope_mismatch(self):
+        async def search(tag, page):
+            return {"ids": [str(i) for i in range(1, 151)] if tag == "冒险" else [str(i) for i in range(151, 301)],
+                    "last": True, "mode": "SOURCE_LIKES_DESC", "scope": "all"}
+        self.provider.search_tag = search
+        self.provider.details = {str(i): detail(str(i)) for i in range(1, 301)}
+        result = await DiscoveryService(self.provider, self.service.skip).collect(["冒险", "科幻"], 2)
+        self.assertEqual(len(result["items"]), 200)
+        self.assertEqual(sum(int(i["source_id"]) <= 150 for i in result["items"]), 100)
+        self.assertEqual(sum(int(i["source_id"]) > 150 for i in result["items"]), 100)
+        self.assertTrue(result["truncated"])
+        async def mismatch(tag, page):
+            return {"ids": [], "last": True, "mode": "SOURCE_LIKES_DESC", "scope": tag}
+        self.provider.search_tag = mismatch
+        with self.assertRaises(JobError) as cm:
+            await DiscoveryService(self.provider, self.service.skip).collect(["冒险", "科幻"], 2)
+        self.assertEqual(cm.exception.code, "PROVIDER_PROTOCOL")
+
+    async def test_legacy_single_tag_schedule_runs_without_schema_change(self):
+        s = self.create(1)
+        self.store.connection.execute("UPDATE schedules SET spec=? WHERE id=?", (json.dumps(self.spec), s["id"]))
+        s = self.service.owned(s["id"], 1)
+        run_id = self.start(s)
+        await self.scheduler.process(self.run_record(run_id))
+        self.assertEqual(self.run_record(run_id)["status"], "QUEUED")
+        self.assertEqual(len(self.store.tasks()), 1)
+        self.assertEqual(self.store.connection.execute("PRAGMA user_version").fetchone()[0], 5)
 
     async def test_exact_sort_unknown_and_abbreviated_likes(self):
         self.provider.mode = "EXACT_LIKES_DESC"

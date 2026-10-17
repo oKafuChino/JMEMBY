@@ -5,6 +5,7 @@ import logging
 import time
 
 from jmemby.domain.errors import JobError
+from jmemby.domain.schedule_tags import schedule_tags
 from jmemby.services.discovery import DiscoveryService
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ class Scheduler:
                 if run["status"] == "DISCOVERING":
                     async with s.discovery_lock:
                         result = await DiscoveryService(s.provider, s.skip_async, s.clock).collect(
-                            config["tag"], config["item_limit"], check)
+                            schedule_tags(config), config["item_limit"], check)
                     check()
                     s.save_plan(run, result)
                 check()

@@ -41,6 +41,7 @@ def evaluate(detail, target):
         return "BLOCK", "AI_TITLE"
     if not detail.complete:
         return "UNKNOWN", "METADATA_INCOMPLETE"
-    if normalize(target) not in {normalize(t) for t in detail.tags}:
+    targets = [target] if isinstance(target, str) else target
+    if not {normalize(t) for t in targets}.intersection(normalize(t) for t in detail.tags):
         return "UNKNOWN", "TARGET_TAG_UNCONFIRMED"
     return "ALLOW", "MATCH"
