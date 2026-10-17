@@ -123,7 +123,7 @@ docker compose up -d app
 
 新增底部菜单可直达首页、注册、我的账号、阅读账号、任务和阅读入口；管理员额外显示管理面板和用户列表。任务状态使用中文和图标提示。
 
-升级启动时自动将数据库 schema 1/2/3 迁移到 4，保留原任务、用户与漫画记录。升级前备份数据库；降级旧代码需要恢复升级前备份。账号加密密钥位于 `data/app/account.key`，必须与数据库一起备份；`update.sh` 备份整个 `data/app`，单独的数据库备份命令不包含该密钥。不要删除密钥，否则尚未交付的密码无法恢复。
+升级启动时自动将数据库 schema 1–4 迁移到 5，保留原任务、用户、账号与漫画记录，新增定时计划和任务来源。升级前备份数据库；降级旧代码需要恢复升级前备份。账号加密密钥位于 `data/app/account.key`，必须与数据库一起备份；`update.sh` 备份整个 `data/app`，单独的数据库备份命令不包含该密钥。不要删除密钥，否则尚未交付的密码无法恢复。
 
 账号管理接口根据 [Komga 官方 UserController](https://github.com/gotson/komga/blob/master/komga/src/main/kotlin/org/gotson/komga/interfaces/api/rest/UserController.kt) 和 [UserCreationDto](https://github.com/gotson/komga/blob/master/komga/src/main/kotlin/org/gotson/komga/interfaces/api/rest/dto/UserCreationDto.kt) 实现，使用 `/api/v2/users`。已完成离线测试，仍需在实际部署版本验收。
 
@@ -209,3 +209,30 @@ PYTHONPATH=src python -m unittest discover -s tests -p test_adapters.py -v
 - SQLite 使用标准库和版本化 SQL 迁移；大章节同步打包可能暂时阻塞 Bot，临时目录尚未自动清理。
 
 详细见 [集成说明](docs/INTEGRATION_NOTES.md)、[验收记录](docs/VALIDATION.md) 和 [部署说明](docs/DEPLOYMENT.md)。
+
+## 定时标签下载
+
+管理员私聊点击「⏰ 定时下载」或发送 `/schedules`。发送 `/schedule_add` 后，按向导依次输入一个标签、`once` / `daily` / `weekly`、日期或星期与时间、IANA 时区和每次部数。例如创建每天凌晨三点的计划：输入标签 → `daily` → `03:00` → `Asia/Hong_Kong` → `5`。单次时间格式为 `2026-12-01 03:00`；每周格式为 `1 03:00`（1=周一，7=周日）。`/schedule_cancel` 退出向导。
+
+新计划默认为暂停。先 `/schedule_preview ID` 查看预计入选及排除原因，再 `/schedule_enable ID` 点击确认启用。默认时区为香港，可通过 `SCHEDULE_DEFAULT_TIMEZONE` 修改新向导默认值；已保存计划的时区不变。列表显示下次执行日期和 UTC 偏移，容器通过 tzdata 提供时区数据。
+
+| 命令 | 功能 |
+| --- | --- |
+| `/schedules [页码]` | 查看自己的计划 |
+| `/schedule_add` | 创建单标签计划 |
+| `/schedule_preview ID` | 按点赞优先搜索和过滤，不创建下载任务 |
+| `/schedule_enable ID` | 确认后启用 |
+| `/schedule_pause ID` | 暂停未来执行及尚未入队批次；已入队任务继续 |
+| `/schedule_run ID` | 确认后立即执行一次，不改变正常下一次时间 |
+| `/schedule_runs ID` | 查看最近运行及选书/下载结果 |
+| `/schedule_cancel_run 批次ID` | 确认后请求取消该批次任务，保留已发布文件 |
+
+仅管理员可以创建计划，且只能管理自己的计划。每次最多新入队 1–20 部；按经核实的上游点赞降序选择，批次内按此顺序排队，不抢占已有任务。自动队列最多保留 50 个未结束任务；每次发现最多 10 页、200 个唯一候选、10 分钟，上游排序模式已有足够候选和 5 个后备时提前停止。自定义适配器也可明确提供精确点赞数模式，在候选范围内排序；`1K` 等缩写不会被当作精确数值。来源缺少点赞排序能力时本次失败并暂停计划。
+
+自动选书核对普通标签，并强制排除 `ai-generate` / `ai-generated` / `AI生成` 等已知标签或明确标题标记。必检元数据缺失或无效时跳过，下载前再次复查；从自动任务手动重试也保留此策略。该规则不能识别所有未标注 AI 内容。手动按 ID 下载沿用原有行为。
+
+系统跳过已入库、活动任务和此前自动尝试过的作品，跨计划共享去重；失败作品不会每天自动重下，可使用 `/retry 任务ID` 显式重试。已有文件异常时提示人工检查，不自动覆盖；该功能不做自动追更。
+
+指定时间表示开始选书和入队，实际下载仍受队列影响。重启后错过时间在 30 分钟内只补最近一次，超过则跳过；上一批次未结束也跳过本次，避免堆积。计划、执行记录、通知、确认操作和去重状态均保存在 SQLite。收到入队摘要后，只有实际 Komga 入库完成才计为下载成功。
+
+实现与验收状态见 [定时功能验收记录](docs/SCHEDULE_VALIDATION.md)，详细设计见 [实现流程与 Agent 开发指导](docs/SCHEDULED_TAG_DOWNLOAD.md)。当前已有离线实现和测试，实际 JMComic 排序、Telegram 交互及 Docker/VPS 集成仍待实测。

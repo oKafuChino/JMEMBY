@@ -52,3 +52,11 @@ docker compose exec app python -m jmemby.main backup --destination /app-data/bac
 当前打包及文件完整性校验为同步操作，大章节可能短时阻塞 Bot；在正式发布前需要改为可控的打包执行单元并验证取消边界。暂不自动清理 staging，成功/失败任务的临时文件需按验收记录安排人工检查；不要删除运行中任务的目录。
 
 Docker Compose 和镜像构建尚未在当前机器验证（本机无 Docker）。CPU/内存上限需要在目标 VPS 检查是否实际生效。
+
+## 定时标签下载升级
+
+本次升级增加 tzdata 依赖和 schema 5，需要重新构建 app 镜像。升级前一致性备份 `data/app`（包含数据库与 account.key）；启动会自动迁移 schema 1–4。新计划默认暂停，不会因升级自行开始下载。旧版本不支持 schema 5，回滚时需要恢复升级前备份。
+
+定时服务与 Bot/worker 同进程，只运行一个 app 实例；不需要额外 cron 或开放端口。`SCHEDULE_DEFAULT_TIMEZONE=Asia/Hong_Kong` 仅影响新建计划，已保存时区不变；容器/宿主机本地时区无需跟着修改。
+
+升级后先运行项目检查并通过管理员 `/schedule_add` 创建未来几分钟的单次计划，使用 `/schedule_preview ID` 核对排序和 AI 排除，再启用进行小样本验收。指定时间代表选书开始，不保证当时立即下载。`/status` 提供调度心跳、启用数量与最近运行状态。验收步骤和已知限制见 [定时功能验收记录](SCHEDULE_VALIDATION.md)。

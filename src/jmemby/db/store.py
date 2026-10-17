@@ -113,7 +113,12 @@ class Store:
                 PRAGMA user_version=4;
                 COMMIT;
             """)
-        elif version != 4:
+            version = 4
+        if version == 4:
+            from jmemby.db.schedule_schema import MIGRATION
+            self.connection.executescript(MIGRATION)
+            version = 5
+        if version != 5:
             self.connection.close()
             raise RuntimeError("Unsupported database version; restore or migrate before startup")
 
@@ -218,10 +223,23 @@ class Store:
         if active:
             if active["user_id"] != user_id:
                 raise ValueError("该漫画已有其他用户的下载任务，请稍后再试")
+            if retry_of and self.get(retry_of)["origin"] == "schedule":
+                raise ValueError("该漫画已有活动任务，请等待结束后再重试自动任务")
             return dict(active)
         task_id, now = uuid.uuid4().hex, time.time()
         db.execute("INSERT INTO tasks(id,manga_id,snapshot,user_id,chat_id,retry_of,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
                    (task_id, record["id"], raw, user_id, chat_id, retry_of, now, now))
+        sequence = db.execute("SELECT COALESCE(MAX(queue_sequence),0)+1 FROM tasks").fetchone()[0]
+        db.execute("UPDATE tasks SET queue_sequence=? WHERE id=?", (sequence, task_id))
+        if retry_of:
+            parent = self.get(retry_of)
+            if parent and parent["origin"] == "schedule":
+                db.execute("UPDATE tasks SET origin='schedule',schedule_run_id=?,policy_version=? WHERE id=?",
+                           (parent["schedule_run_id"], parent["policy_version"], task_id))
+                db.execute("UPDATE auto_download_claims SET task_id=? WHERE task_id=?", (task_id, retry_of))
+                db.execute("UPDATE schedule_run_items SET task_id=?,decision='QUEUED',reason='RETRY_PENDING' WHERE task_id=?", (task_id, retry_of))
+                db.execute("UPDATE schedule_runs SET status='QUEUED',error=NULL WHERE id=?", (parent["schedule_run_id"],))
+                db.execute("DELETE FROM schedule_notifications WHERE run_id=? AND event='finished'", (parent["schedule_run_id"],))
         for chapter in manga.chapters:
             path = (Path(record["directory"]) / chapter_filename(chapter, manga)).as_posix()
             db.execute("INSERT OR IGNORE INTO chapters(manga_id,source_id,ordinal,title,path) VALUES (?,?,?,?,?)",
@@ -246,7 +264,7 @@ class Store:
     def next_task(self):
         with self.transaction() as db:
             row = db.execute("SELECT * FROM tasks WHERE status IN ('QUEUED','RETRY_WAIT','CANCEL_REQUESTED') "
-                             "AND (next_at<=? OR cancel_requested=1) ORDER BY created_at LIMIT 1", (time.time(),)).fetchone()
+                             "AND (next_at<=? OR cancel_requested=1) ORDER BY queue_sequence LIMIT 1", (time.time(),)).fetchone()
             if row:
                 self.update(row["id"], status="DOWNLOADING")
                 return self.get(row["id"])

@@ -91,6 +91,21 @@ class Worker:
         task_id = task["id"]
         self.check(task_id)
         manga = decode_manga(task["snapshot"])
+        if task.get("origin") == "schedule":
+            from jmemby.domain.discovery import evaluate
+            run = self.store.connection.execute("SELECT snapshot FROM schedule_runs WHERE id=?", (task["schedule_run_id"],)).fetchone()
+            if not run or task["user_id"] not in self.settings.allowed_user_ids:
+                raise JobError("CONTENT_EXCLUDED", "自动任务管理员权限已失效；已发布文件保留")
+            config = json.loads(run[0])
+            if not hasattr(self.provider, "get_discovery_detail"):
+                raise JobError("DISCOVERY_UNSUPPORTED", "数据源缺少下载前内容检查")
+            detail = await self.guarded(task_id, self.provider.get_discovery_detail(manga.source_id))
+            decision, reason = evaluate(detail, config["tag"])
+            if detail.manga.source_id != manga.source_id or detail.manga.source != manga.source:
+                raise JobError("PROVIDER_PROTOCOL", "下载前详情身份不匹配")
+            if decision != "ALLOW":
+                self.store.connection.execute("UPDATE schedule_run_items SET reason=?,decision='SKIP' WHERE task_id=?", (reason, task_id))
+                raise JobError("CONTENT_EXCLUDED", f"自动内容检查未通过 [{reason}]；已发布文件保留")
         records = self.store.chapters(task_id)
         chapter_map = {c.source_id: c for c in manga.chapters}
         total_bytes = 0

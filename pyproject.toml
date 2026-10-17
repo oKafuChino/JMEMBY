@@ -8,6 +8,7 @@ dependencies = [
   "aiogram>=3.13,<4",
   "Pillow>=12,<13",
   "jmcomic>=2.5,<3",
+  "tzdata>=2025.2",
 ]
 
 [build-system]
