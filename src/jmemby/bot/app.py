@@ -6,7 +6,8 @@ import time
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile, InputMediaPhoto
+from jmemby.bot.completion import completion_text, read_cover
 from html import escape
 from jmemby.bot.presentation import describe, normalize
 
@@ -81,6 +82,7 @@ def create_dispatcher(service, settings, accounts, diagnostics):
         head, _, argument = text.partition(" ")
         command = head.split("@")[0]
         user_id = message.from_user.id
+        pending = None
         try:
             if command in {"/start", "/help"}:
                 help_text = "📚 欢迎使用 JMEMBY\n\n① 注册账号 → ② 发送漫画 ID → ③ 确认下载\n\n/register [邀请码] 注册\n/account 领取或补开阅读账号\n/me 我的信息\n/queue 我的任务\n/status 任务ID 查看进度\n/cancel 任务ID 取消任务\n/retry 任务ID 重试\n/library 开始阅读"
@@ -171,21 +173,25 @@ def create_dispatcher(service, settings, accounts, diagnostics):
                 service.store.request_cancel(argument.strip(), user_id)
                 await message.answer("已请求取消；停止后会通知，已发布文件保留")
             elif command == "/retry":
-                await message.answer(describe(service.retry(argument.strip(), user_id)))
+                task = service.retry(argument.strip(), user_id)
+                sent = await message.answer(describe(task))
+                service.store.update(task["id"], message_id=sent.message_id)
             elif command.startswith("/") and command != "/download":
                 await message.answer("未知命令，请使用 /help")
             else:
-                if command == "/download":
-                    await message.answer("⏳ 正在获取作品信息，请稍候……")
+                pending = await message.answer("⏳ 正在获取作品信息，请稍候……")
                 manga, token = await service.preview(argument if command == "/download" else text, user_id, message.chat.id)
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="确认下载", callback_data=f"confirm:{token}"),
                     InlineKeyboardButton(text="取消", callback_data=f"dismiss:{token}"),
                 ]])
-                await message.answer(f"{manga.title[:500]}\n作者：{', '.join(manga.authors)[:500]}\n"
+                await pending.edit_text(f"{manga.title[:500]}\n作者：{', '.join(manga.authors)[:500]}\n"
                                      f"来源 ID：{manga.source_id}\n章节：{len(manga.chapters)}", reply_markup=keyboard)
         except (ValueError, JobError) as exc:
-            await message.answer("⚠️ " + str(exc)[:1000])
+            if pending:
+                await pending.edit_text("⚠️ " + str(exc)[:1000])
+            else:
+                await message.answer("⚠️ " + str(exc)[:1000])
 
     @router.callback_query()
     async def callback_handler(callback: CallbackQuery):
@@ -194,10 +200,18 @@ def create_dispatcher(service, settings, accounts, diagnostics):
             if action == "dismiss":
                 service.store.dismiss(token, callback.from_user.id)
                 await callback.answer("已取消")
+                await callback.message.delete()
             elif action == "confirm":
                 task = service.confirm(token, callback.from_user.id)
                 if task["user_id"] != callback.from_user.id:
                     await callback.answer("该漫画已有下载任务")
+                    return
+                if task["message_id"] and task["message_id"] != callback.message.message_id:
+                    await callback.answer("该作品已有任务")
+                    await callback.message.delete()
+                    return
+                if task["status"] in {"COMPLETED", "FAILED", "CANCELLED"}:
+                    await callback.answer("任务已结束，请查看结果")
                     return
                 service.store.update(task["id"], message_id=callback.message.message_id)
                 await callback.answer("已加入队列")
@@ -214,14 +228,39 @@ def create_dispatcher(service, settings, accounts, diagnostics):
     return dispatcher
 
 
-async def deliver_notifications(bot: Bot, store, public_url):
+async def deliver_notifications(bot: Bot, store, public_url, storage_root=None):
     for notice in store.notifications():
         task = store.get(notice["task_id"])
-        text = describe(task)
-        if task["status"] == "COMPLETED" and public_url:
-            text += "\n" + public_url
+        completed = task["status"] == "COMPLETED"
+        text = completion_text(task) if completed else describe(task)
         try:
-            await bot.send_message(task["chat_id"], text)
+            cover = None
+            if completed and storage_root:
+                chapters = store.chapters(task["id"])
+                if chapters:
+                    cover = await asyncio.to_thread(read_cover, storage_root, chapters[0]["path"])
+            photo = BufferedInputFile(cover, filename="cover.jpg") if cover else None
+            edited = False
+            if task["message_id"]:
+                try:
+                    if photo:
+                        await bot.edit_message_media(chat_id=task["chat_id"], message_id=task["message_id"],
+                                                     media=InputMediaPhoto(media=photo, caption=text))
+                    else:
+                        await bot.edit_message_text(chat_id=task["chat_id"], message_id=task["message_id"], text=text)
+                    edited = True
+                except TelegramBadRequest as exc:
+                    edited = "message is not modified" in str(exc).lower()
+            if not edited:
+                if photo:
+                    await bot.send_photo(task["chat_id"], photo, caption=text)
+                else:
+                    await bot.send_message(task["chat_id"], text)
+                if task["message_id"]:
+                    try:
+                        await bot.delete_message(task["chat_id"], task["message_id"])
+                    except Exception:
+                        pass
             store.notified(notice["id"])
         except TelegramRetryAfter as exc:
             store.defer_notification(notice["id"], exc.retry_after)
@@ -229,10 +268,10 @@ async def deliver_notifications(bot: Bot, store, public_url):
             store.defer_notification(notice["id"], min(3600, 2 ** min(notice["attempts"] + 1, 11)))
 
 
-async def notifications(bot, store, public_url):
+async def notifications(bot, store, public_url, storage_root=None):
     last_text = {}
     while True:
-        await deliver_notifications(bot, store, public_url)
+        await deliver_notifications(bot, store, public_url, storage_root)
         for task in store.tasks(active=True):
             if not task["message_id"]:
                 continue
@@ -245,8 +284,11 @@ async def notifications(bot, store, public_url):
             except TelegramRetryAfter as exc:
                 await asyncio.sleep(min(exc.retry_after, 60))
                 break
-            except TelegramBadRequest:
-                store.update(task["id"], message_id=None)
+            except TelegramBadRequest as exc:
+                if "message is not modified" in str(exc).lower():
+                    last_text[task["id"]] = text
+                else:
+                    store.update(task["id"], message_id=None)
             except Exception:
                 pass
         await asyncio.sleep(5)

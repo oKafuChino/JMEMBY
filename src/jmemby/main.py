@@ -42,7 +42,7 @@ async def run(settings, db_path, recent_logs):
                 heartbeat.write_text(str(time.time()))
             await asyncio.sleep(5)
 
-    jobs = [asyncio.create_task(worker.run()), asyncio.create_task(notifications(bot, store, settings.komga_public_url)),
+    jobs = [asyncio.create_task(worker.run()), asyncio.create_task(notifications(bot, store, settings.komga_public_url, settings.storage_root)),
             asyncio.create_task(health()), asyncio.create_task(dispatcher.start_polling(bot))]
     try:
         done, _ = await asyncio.wait(jobs, return_when=asyncio.FIRST_COMPLETED)
