@@ -81,6 +81,21 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         with zipfile.ZipFile(self.worker.library / record["path"]) as archive:
             info = ElementTree.fromstring(archive.read("ComicInfo.xml"))
             self.assertEqual(info.findtext("Tags"), "冒险, A & <B>")
+            self.assertEqual(info.findtext("Series"), "A & <B> [JM42]")
+            self.assertEqual(info.findtext("Title"), "Chapter [JM42]")
+
+    def test_display_id_is_not_duplicated_or_added_to_other_sources(self):
+        from xml.etree import ElementTree
+        from jmemby.storage.cbz import comic_info
+        item = replace(manga(), title="作品 [JM42]")
+        chapter = replace(item.chapters[0], title="章节 [JM42]")
+        info = ElementTree.fromstring(comic_info(item, chapter))
+        self.assertEqual(info.findtext("Series"), item.title)
+        self.assertEqual(info.findtext("Title"), chapter.title)
+        item = replace(manga(), source="other")
+        info = ElementTree.fromstring(comic_info(item, item.chapters[0]))
+        self.assertEqual(info.findtext("Series"), item.title)
+        self.assertEqual(info.findtext("Title"), item.chapters[0].title)
 
     def test_old_snapshots_and_existing_paths_remain_compatible(self):
         from dataclasses import asdict

@@ -138,10 +138,14 @@ def handle(request, client):
         return {}
     if operation == "metadata":
         album = at_stage("album_metadata", client.get_album_detail, request["id"])
-        try:
-            tags = normalize_tags(getattr(album, "tags", ()))
-        except Exception:
-            tags = ()  # Optional SDK metadata: keep downloading if unavailable.
+        tags = []
+        for field in ("tags", "works", "characters"):
+            try:
+                values = normalize_tags(getattr(album, field, ()))
+            except Exception:
+                continue  # One unavailable field must not discard the other labels.
+            tags.extend(tag for tag in values if tag not in tags)
+        tags = normalize_tags(tags)
         return {"title": album.name, "authors": list(album.authors), "tags": list(tags),
                 "chapters": [{"id": str(photo.id), "title": photo.name} for photo in album]}
     if operation == "pages":

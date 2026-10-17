@@ -41,8 +41,21 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(handle({"operation": "metadata", "id": "42"}, client)["tags"], [])
         album = client.get_album_detail("42")
         album.tags = ["冒险", " 冒险 ", "剧情", None]
+        album.works = ["原作 & 外传", "冒险"]
+        album.characters = ["人物甲", "人物甲"]
         with patch.object(client, "get_album_detail", return_value=album):
-            self.assertEqual(handle({"operation": "metadata", "id": "42"}, client)["tags"], ["冒险", "剧情"])
+            self.assertEqual(handle({"operation": "metadata", "id": "42"}, client)["tags"],
+                             ["冒险", "剧情", "原作 & 外传", "人物甲"])
+
+    def test_unavailable_tag_field_preserves_works_and_characters(self):
+        class Album(list):
+            name, authors = "漫画", []
+            works, characters = ["原作"], ["人物"]
+            @property
+            def tags(self):
+                raise ValueError("missing metadata")
+        with patch.object(SDK, "get_album_detail", return_value=Album([Photo()])):
+            self.assertEqual(handle({"operation": "metadata", "id": "42"}, SDK())["tags"], ["原作", "人物"])
 
     def test_disk_full_sdk_error_is_not_retried_as_network(self):
         import errno

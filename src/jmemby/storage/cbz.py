@@ -107,10 +107,13 @@ def validate_cbz(path, manga, chapter, max_bytes=30 * 1024 * 1024, max_pixels=50
 
 def comic_info(manga: Manga, chapter: Chapter) -> bytes:
     authors = escape(", ".join(manga.authors), quote=True)
+    suffix = f" [JM{manga.source_id}]" if manga.source == "jmcomic" else ""
+    title = chapter.title if not suffix or chapter.title.endswith(suffix) else chapter.title + suffix
+    series = manga.title if not suffix or manga.title.endswith(suffix) else manga.title + suffix
     xml = f'''<?xml version="1.0" encoding="utf-8"?>
 <ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <Title>{escape(chapter.title)}</Title>
-  <Series>{escape(manga.title)}</Series>
+  <Title>{escape(title)}</Title>
+  <Series>{escape(series)}</Series>
   <Number>{chapter.ordinal}</Number>
   <Writer>{authors}</Writer>
   <Tags>{escape(", ".join(normalize_tags(manga.tags)))}</Tags>
