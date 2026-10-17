@@ -175,6 +175,8 @@ def create_dispatcher(service, settings, accounts, diagnostics):
             elif command.startswith("/") and command != "/download":
                 await message.answer("未知命令，请使用 /help")
             else:
+                if command == "/download":
+                    await message.answer("⏳ 正在获取作品信息，请稍候……")
                 manga, token = await service.preview(argument if command == "/download" else text, user_id, message.chat.id)
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="确认下载", callback_data=f"confirm:{token}"),
