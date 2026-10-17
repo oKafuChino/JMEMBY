@@ -17,10 +17,11 @@ from jmemby.runtime import JsonFormatter, backup_database, database_path, instan
 from jmemby.services.tasks import TaskService
 from jmemby.services.users import UserService
 from jmemby.services.accounts import AccountService
+from jmemby.services.diagnostics import Diagnostics, RecentLogs
 from jmemby.workers.queue import Worker
 
 
-async def run(settings, db_path):
+async def run(settings, db_path, recent_logs):
     from aiogram import Bot
     from jmemby.bot.app import create_dispatcher, notifications
     provider_type = CommandProvider if os.getenv("PROVIDER_COMMAND") else JmProvider
@@ -31,7 +32,8 @@ async def run(settings, db_path):
     worker = Worker(store, provider, komga, settings)
     users = UserService(store, settings.allowed_user_ids)
     accounts = AccountService(users, komga, db_path.parent / "account.key")
-    dispatcher = create_dispatcher(TaskService(store, provider, settings.provider_domains, users), settings, accounts)
+    diagnostics = Diagnostics(users, worker, komga, recent_logs)
+    dispatcher = create_dispatcher(TaskService(store, provider, settings.provider_domains, users), settings, accounts, diagnostics)
     heartbeat = db_path.parent / "heartbeat"
 
     async def health():
@@ -79,7 +81,8 @@ def main():
         return
     handler = logging.StreamHandler()
     handler.setFormatter(JsonFormatter())
-    logging.basicConfig(handlers=[handler], level=logging.INFO)
+    recent_logs = RecentLogs()
+    logging.basicConfig(handlers=[handler, recent_logs], level=logging.INFO)
     try:
         settings = Settings.from_env()
         if args.command == "check-source":
@@ -104,7 +107,7 @@ def main():
             print("Configuration valid; external integrations are not verified by this check")
             return
         with instance_lock(db_path.parent / "instance.lock"):
-            asyncio.run(run(settings, db_path))
+            asyncio.run(run(settings, db_path, recent_logs))
     except JobError as exc:
         parser.exit(2, f"检查失败 [{exc.code}]：{exc}\n")
     except (ValueError, RuntimeError) as exc:

@@ -3,7 +3,8 @@ import json
 
 MENU = {"🏠 首页": "/start", "📝 注册": "/register", "👤 我的账号": "/me",
         "📚 阅读入口": "/library", "📋 我的任务": "/queue", "🔑 阅读账号": "/account",
-        "⚙️ 管理面板": "/admin", "👥 用户列表": "/users"}
+        "⚙️ 管理面板": "/admin", "👥 用户列表": "/users",
+        "🩺 服务状态": "/status", "📜 最近日志": "/logs"}
 STATUS = {"QUEUED": "⏳ 排队中", "DOWNLOADING": "📥 下载中", "PACKAGING": "📦 整理中",
           "IMPORT_PENDING": "📚 正在入库", "COMPLETED": "✅ 已完成", "FAILED": "❌ 失败",
           "RETRY_WAIT": "🔄 等待重试", "PAUSED_DISK": "⏸ 空间不足",

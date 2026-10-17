@@ -6,7 +6,7 @@ import time
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile
 from html import escape
 from jmemby.bot.presentation import describe, normalize
 
@@ -44,7 +44,7 @@ class Authorization(BaseMiddleware):
         return await handler(event, data)
 
 
-def create_dispatcher(service, settings, accounts):
+def create_dispatcher(service, settings, accounts, diagnostics):
     router = Router()
     users = service.users
     guard = Authorization(users)
@@ -55,6 +55,7 @@ def create_dispatcher(service, settings, accounts):
         rows = [["🏠 首页", "👤 我的账号"], ["📝 注册", "🔑 阅读账号"], ["📋 我的任务", "📚 阅读入口"]]
         if users.is_admin(user_id):
             rows.append(["⚙️ 管理面板", "👥 用户列表"])
+            rows.append(["🩺 服务状态", "📜 最近日志"])
         return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=t) for t in row] for row in rows], resize_keyboard=True)
 
     async def reading_account(message, user_id):
@@ -86,6 +87,7 @@ def create_dispatcher(service, settings, accounts):
                 if users.invite_required():
                     help_text += "\n当前为邀请注册：请向管理员获取邀请码"
                 if users.is_admin(user_id):
+                    help_text += "\n/status 服务状态\n/logs 最近 100 条应用日志"
                     help_text += "\n管理员：/admin /users [页码]\n/registration on|off\n/ban 用户ID /unban 用户ID\n/disk 磁盘状态"
                     help_text += "\n/invite_mode on|off\n/invite_create [次数]\n/invites [页码]\n/invite_revoke 编号"
                 await message.answer(help_text, reply_markup=menu(user_id))
@@ -108,7 +110,7 @@ def create_dispatcher(service, settings, accounts):
                     f"⚙️ 管理面板\n\n👥 注册总数：{stats['total']}\n✅ 正常：{stats['active']}  🚫 禁用：{stats['blocked']}\n"
                     f"🛡 管理员：{stats['admins']}\n\n📝 新注册：{'开放' if stats['registration_open'] else '关闭'}\n"
                     f"🎟 邀请注册：{'开启' if stats['invite_required'] else '关闭'}\n\n"
-                    "/users [页码] 查看用户\n/registration on|off 注册开关\n/invite_mode on|off 邀请模式\n"
+                    "/status 服务状态\n/logs 最近 100 条应用日志\n/users [页码] 查看用户\n/registration on|off 注册开关\n/invite_mode on|off 邀请模式\n"
                     "/invite_create [次数] 生成邀请码\n/invites [页码] 邀请记录\n/invite_revoke 编号 撤销邀请码\n"
                     "/ban 用户ID 禁用 Bot\n/unban 用户ID 解禁 Bot\n\nKomga 账号权限请在 Komga 管理。",
                     reply_markup=menu(user_id))
@@ -157,7 +159,14 @@ def create_dispatcher(service, settings, accounts):
                 tasks = service.store.tasks(user_id, page)
                 await message.answer(("\n\n".join(describe(t) for t in tasks) or "暂无任务")[:4000])
             elif command == "/status":
-                await message.answer(describe(service.get(argument.strip(), user_id)))
+                if argument.strip():
+                    await message.answer(describe(service.get(argument.strip(), user_id)))
+                else:
+                    await message.answer(await diagnostics.status(user_id))
+            elif command == "/logs":
+                content = diagnostics.recent_logs(user_id)
+                await message.answer_document(BufferedInputFile(content.encode("utf-8"), filename="jmemby-recent-100.log"),
+                                              caption="📜 本次启动以来最近最多 100 条应用日志（已脱敏）", protect_content=True)
             elif command == "/cancel":
                 service.store.request_cancel(argument.strip(), user_id)
                 await message.answer("已请求取消；停止后会通知，已发布文件保留")
