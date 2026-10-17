@@ -11,6 +11,61 @@ from jmemby.services.users import UserService
 
 
 class UsersTests(unittest.IsolatedAsyncioTestCase):
+    def test_invitation_required_and_single_use(self):
+        self.users.set_invite_required(1, True)
+        number, code = self.users.create_invite(1)
+        for invalid in ("", "invalid"):
+            with self.assertRaises(ValueError):
+                self.users.register(2, invite_code=invalid)
+        self.users.register(2, invite_code=code)
+        self.users.register(2, invite_code=code)
+        with self.assertRaises(ValueError):
+            self.users.register(3, invite_code=code)
+        self.assertEqual(self.users.list_invites(1)[0]["used"], 1)
+        row = self.store.connection.execute("SELECT * FROM invites WHERE id=?", (number,)).fetchone()
+        self.assertNotIn(code, str(tuple(row)))
+
+    def test_invite_revocation_and_global_switch(self):
+        self.users.set_invite_required(1, True)
+        number, code = self.users.create_invite(1, 2)
+        self.users.set_registration(1, False)
+        with self.assertRaises(ValueError):
+            self.users.register(2, invite_code=code)
+        self.assertEqual(self.users.list_invites(1)[0]["used"], 0)
+        self.users.set_registration(1, True)
+        self.users.register(2, invite_code=code)
+        self.users.revoke_invite(1, number)
+        with self.assertRaises(ValueError):
+            self.users.register(3, invite_code=code)
+        self.users.set_invite_required(1, False)
+        self.users.register(3)
+        self.users.require_member(2)
+
+    def test_invite_permissions_and_persistence(self):
+        self.users.register(2)
+        for action in (lambda: self.users.create_invite(2), lambda: self.users.list_invites(2),
+                       lambda: self.users.revoke_invite(2, 1), lambda: self.users.set_invite_required(2, True)):
+            with self.assertRaises(ValueError):
+                action()
+        self.users.set_invite_required(1, True)
+        _, code = self.users.create_invite(1, 2)
+        self.store.close()
+        self.store = Store(self.path)
+        self.users = UserService(self.store, {1})
+        self.assertTrue(self.users.invite_required())
+        self.users.register(3, invite_code=code)
+        self.users.register(4, invite_code=code)
+        with self.assertRaises(ValueError):
+            self.users.register(5, invite_code=code)
+
+    def test_invite_consumption_rolls_back_when_registration_fails(self):
+        self.users.set_invite_required(1, True)
+        _, code = self.users.create_invite(1)
+        self.store.connection.execute("CREATE TRIGGER fail_registration BEFORE INSERT ON users BEGIN SELECT RAISE(ABORT,'test'); END")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.users.register(2, invite_code=code)
+        self.assertEqual(self.users.list_invites(1)[0]["used"], 0)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.path = Path(self.temporary.name) / "app.db"
@@ -139,7 +194,7 @@ class UsersTests(unittest.IsolatedAsyncioTestCase):
         db.close()
         upgraded = Store(legacy)
         try:
-            self.assertEqual(upgraded.connection.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(upgraded.connection.execute("PRAGMA user_version").fetchone()[0], 4)
             self.assertEqual(upgraded.connection.execute("SELECT title FROM manga").fetchone()[0], "Old")
             UserService(upgraded, {1}).register(2)
         finally:

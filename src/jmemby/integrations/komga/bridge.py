@@ -14,6 +14,8 @@ class KomgaBridge(CommandProvider):
 
     def error_message(self, code):
         return {
+            "KOMGA_ACCOUNT_CONFLICT": "该登录邮箱已存在且无法确认归属，请联系管理员；不会重置原账号。",
+            "KOMGA_ACCOUNT_PERMISSIONS": "阅读账号权限与预期不符，请联系管理员检查账号权限。",
             "KOMGA_AUTH": "Komga 登录失败（HTTP 401），请检查管理员邮箱和密码。",
             "KOMGA_FORBIDDEN": "Komga 拒绝访问（HTTP 403），请使用有权限的管理员账户。",
             "KOMGA_NOT_FOUND": "Komga 接口或漫画库不存在（HTTP 404），请检查 KOMGA_BASE_URL 和 KOMGA_LIBRARY_ID。",

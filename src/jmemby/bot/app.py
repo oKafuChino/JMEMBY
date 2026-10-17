@@ -6,6 +6,9 @@ import time
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from html import escape
+from jmemby.bot.presentation import describe, normalize
 
 from jmemby.domain.errors import JobError
 
@@ -27,7 +30,7 @@ class Authorization(BaseMiddleware):
             if isinstance(event, CallbackQuery):
                 await event.answer("无权操作", show_alert=True)
             return
-        command = ((getattr(event, "text", "") or "").split() or [""])[0].split("@")[0]
+        command = (normalize(getattr(event, "text", "") or "").split() or [""])[0].split("@")[0]
         public = not isinstance(event, CallbackQuery) and command in {"/start", "/help", "/register", "/me"}
         if not public:
             try:
@@ -41,43 +44,77 @@ class Authorization(BaseMiddleware):
         return await handler(event, data)
 
 
-def describe(task):
-    title = json.loads(task["snapshot"])["title"][:200]
-    return (f"{title}\n任务：{task['id']}\n状态：{task['status']}\n"
-            f"{task['progress']}\n{task['error'] or ''}")[:3500]
-
-
-def create_dispatcher(service, settings):
+def create_dispatcher(service, settings, accounts):
     router = Router()
     users = service.users
     guard = Authorization(users)
     router.message.outer_middleware(guard)
     router.callback_query.outer_middleware(guard)
 
+    def menu(user_id):
+        rows = [["🏠 首页", "👤 我的账号"], ["📝 注册", "🔑 阅读账号"], ["📋 我的任务", "📚 阅读入口"]]
+        if users.is_admin(user_id):
+            rows.append(["⚙️ 管理面板", "👥 用户列表"])
+        return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=t) for t in row] for row in rows], resize_keyboard=True)
+
+    async def reading_account(message, user_id):
+        await message.answer("⏳ 正在准备你的阅读账号，请稍候……")
+        try:
+            account = await accounts.ensure(user_id)
+        except JobError as exc:
+            await message.answer(f"⚠️ Bot 注册已保留，阅读账号尚未开通。\n{exc}\n稍后点击「🔑 阅读账号」重试，不会重复消耗邀请码。")
+            return
+        text = f"📚 <b>你的 Komga 阅读账号</b>\n\n登录邮箱：<code>{escape(account['email'])}</code>"
+        if account["password"]:
+            text += f"\n初始密码：<code>{escape(account['password'])}</code>\n\n请保存密码，登录后在 Komga 修改。密码发送成功后不会在 Bot 中再次展示。"
+        else:
+            text += "\n\n初始密码已发送。忘记密码请联系管理员在 Komga 重置。"
+        await message.answer(text, parse_mode="HTML", protect_content=True)
+        accounts.delivered(user_id)
+        if settings.komga_public_url:
+            await message.answer("阅读入口：" + settings.komga_public_url)
+
     @router.message(F.text)
     async def message_handler(message: Message):
-        text = message.text.strip()
+        text = normalize(message.text)
         head, _, argument = text.partition(" ")
         command = head.split("@")[0]
         user_id = message.from_user.id
         try:
             if command in {"/start", "/help"}:
-                help_text = "/register 注册账号；/me 查看账号\n注册后发送数字漫画 ID 或 /download ID\n/queue [页码] /status 任务ID\n/cancel 任务ID /retry 任务ID\n/library 阅读入口"
+                help_text = "📚 欢迎使用 JMEMBY\n\n① 注册账号 → ② 发送漫画 ID → ③ 确认下载\n\n/register [邀请码] 注册\n/account 领取或补开阅读账号\n/me 我的信息\n/queue 我的任务\n/status 任务ID 查看进度\n/cancel 任务ID 取消任务\n/retry 任务ID 重试\n/library 开始阅读"
+                if users.invite_required():
+                    help_text += "\n当前为邀请注册：请向管理员获取邀请码"
                 if users.is_admin(user_id):
                     help_text += "\n管理员：/admin /users [页码]\n/registration on|off\n/ban 用户ID /unban 用户ID\n/disk 磁盘状态"
-                await message.answer(help_text)
+                    help_text += "\n/invite_mode on|off\n/invite_create [次数]\n/invites [页码]\n/invite_revoke 编号"
+                await message.answer(help_text, reply_markup=menu(user_id))
             elif command == "/register":
-                await message.answer(users.register(user_id, message.from_user.username, message.from_user.full_name))
+                result = users.register(user_id, message.from_user.username, message.from_user.full_name, argument.strip())
+                await message.answer("✅ " + result, reply_markup=menu(user_id))
+                if not users.is_admin(user_id):
+                    await reading_account(message, user_id)
+            elif command == "/account":
+                await reading_account(message, user_id)
             elif command == "/me":
                 account = users.get(user_id)
                 status = "管理员" if users.is_admin(user_id) else "未注册" if not account else "已禁用" if account["blocked"] else "已注册"
-                await message.answer(f"用户 ID：{user_id}\n状态：{status}")
+                reading = accounts.get(user_id)
+                reading_status = "已开通" if reading and reading["status"] == "READY" else "待开通"
+                await message.answer(f"👤 我的账号\n\n用户 ID：{user_id}\nBot 状态：{status}\n阅读账号：{reading_status}\n\n点击「🔑 阅读账号」领取或重试开通。", reply_markup=menu(user_id))
             elif command == "/admin":
                 stats = users.statistics(user_id)
-                await message.answer(f"注册用户总数：{stats['total']}\n正常用户：{stats['active']}\n禁用用户：{stats['blocked']}\n管理员：{stats['admins']}\n注册：{'开放' if stats['registration_open'] else '关闭'}\n/users [页码]\n/registration on|off\n/ban 用户ID /unban 用户ID")
+                await message.answer(
+                    f"⚙️ 管理面板\n\n👥 注册总数：{stats['total']}\n✅ 正常：{stats['active']}  🚫 禁用：{stats['blocked']}\n"
+                    f"🛡 管理员：{stats['admins']}\n\n📝 新注册：{'开放' if stats['registration_open'] else '关闭'}\n"
+                    f"🎟 邀请注册：{'开启' if stats['invite_required'] else '关闭'}\n\n"
+                    "/users [页码] 查看用户\n/registration on|off 注册开关\n/invite_mode on|off 邀请模式\n"
+                    "/invite_create [次数] 生成邀请码\n/invites [页码] 邀请记录\n/invite_revoke 编号 撤销邀请码\n"
+                    "/ban 用户ID 禁用 Bot\n/unban 用户ID 解禁 Bot\n\nKomga 账号权限请在 Komga 管理。",
+                    reply_markup=menu(user_id))
             elif command == "/users":
-                accounts = users.list_users(user_id, int(argument or "1"))
-                lines = [f"{u['user_id']} | @{u['username'] or '-'} | {'禁用' if u['blocked'] else '正常'}" for u in accounts]
+                members = users.list_users(user_id, int(argument or "1"))
+                lines = [f"{u['user_id']} | @{u['username'] or '-'} | {'禁用' if u['blocked'] else '正常'}" for u in members]
                 await message.answer("\n".join(lines) or "本页暂无注册用户")
             elif command == "/registration":
                 users.require_admin(user_id)
@@ -85,6 +122,24 @@ def create_dispatcher(service, settings):
                     raise ValueError("用法：/registration on 或 /registration off")
                 users.set_registration(user_id, argument.strip().lower() == "on")
                 await message.answer("新用户注册已" + ("开放" if users.registration_open() else "关闭"))
+            elif command == "/invite_mode":
+                users.require_admin(user_id)
+                mode = argument.strip().lower()
+                if mode not in {"on", "off"}:
+                    raise ValueError("用法：/invite_mode on 或 /invite_mode off")
+                users.set_invite_required(user_id, mode == "on")
+                await message.answer("邀请注册已" + ("开启：新用户必须使用 /register 邀请码" if mode == "on" else "关闭") + "；注册总开关保持不变")
+            elif command == "/invite_create":
+                users.require_admin(user_id)
+                number, code = users.create_invite(user_id, int(argument or "1"))
+                await message.answer(f"邀请码编号：{number}\n邀请码仅显示一次，请保存并发给受邀用户：\n/register {code}")
+            elif command == "/invites":
+                items = users.list_invites(user_id, int(argument or "1"))
+                await message.answer("\n".join(f"编号 {i['id']} | 已用 {i['used']}/{i['max_uses']} | {'已撤销' if i['revoked'] else '未撤销'}" for i in items) or "本页暂无邀请码")
+            elif command == "/invite_revoke":
+                users.require_admin(user_id)
+                users.revoke_invite(user_id, int(argument.strip()))
+                await message.answer("邀请码已撤销；已注册用户不受影响")
             elif command in {"/ban", "/unban"}:
                 users.require_admin(user_id)
                 target = int(argument.strip())
@@ -119,7 +174,7 @@ def create_dispatcher(service, settings):
                 await message.answer(f"{manga.title[:500]}\n作者：{', '.join(manga.authors)[:500]}\n"
                                      f"来源 ID：{manga.source_id}\n章节：{len(manga.chapters)}", reply_markup=keyboard)
         except (ValueError, JobError) as exc:
-            await message.answer(str(exc)[:1000])
+            await message.answer("⚠️ " + str(exc)[:1000])
 
     @router.callback_query()
     async def callback_handler(callback: CallbackQuery):

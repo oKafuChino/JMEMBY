@@ -36,9 +36,14 @@ class KomgaAPI:
         self.authorization = "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()
         self.opener = build_opener(NoRedirect)
 
-    def request(self, method, path, query=None):
+    def request(self, method, path, query=None, payload=None):
         url = self.base + path + ("?" + urlencode(query, doseq=True) if query else "")
-        req = Request(url, method=method, headers={"Authorization": self.authorization, "Accept": "application/json"})
+        headers = {"Authorization": self.authorization, "Accept": "application/json"}
+        data = None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+            data = json.dumps(payload).encode()
+        req = Request(url, method=method, headers=headers, data=data)
         try:
             with self.opener.open(req, timeout=30) as response:
                 body = response.read(16 * 1024 * 1024 + 1)
@@ -106,6 +111,38 @@ class KomgaAPI:
             raise ApiError("KOMGA_ROOT_MISMATCH")
         return {"library_id": self.library_id, "root": str(self.root)}
 
+    def provision_user(self, email, password):
+        import re
+        if not re.fullmatch(r"tg[1-9][0-9]*@jmemby\.local", email) or len(password) < 20:
+            raise ValueError("Invalid generated account")
+        self.check_library()
+        users = self.request("GET", "/api/v2/users")
+        if not isinstance(users, list):
+            raise ApiError("KOMGA_PROTOCOL")
+        existing = next((u for u in users if u.get("email", "").lower() == email), None)
+        if existing is None:
+            user = self.request("POST", "/api/v2/users", payload={
+                "email": email, "password": password, "roles": [],
+                "sharedLibraries": {"all": False, "libraryIds": [self.library_id]},
+                "ageRestriction": None, "labelsAllow": [], "labelsExclude": [],
+            })
+        else:
+            # Recover a lost POST response only if the persisted generated password
+            # authenticates. Never take over or reset an unrelated existing account.
+            login = KomgaAPI(self.base, email, password, self.library_id, str(self.root))
+            try:
+                user = login.request("GET", "/api/v2/users/me")
+            except ApiError as exc:
+                if exc.code in {"KOMGA_AUTH", "KOMGA_FORBIDDEN"}:
+                    raise ApiError("KOMGA_ACCOUNT_CONFLICT") from exc
+                raise
+        if (not isinstance(user, dict) or not user.get("id") or user.get("email", "").lower() != email
+                or not isinstance(user.get("roles"), list) or set(user["roles"]) - {"USER"}
+                or user.get("sharedAllLibraries") is not False
+                or set(user.get("sharedLibrariesIds", [])) != {self.library_id}):
+            raise ApiError("KOMGA_ACCOUNT_PERMISSIONS")
+        return {"id": str(user["id"]), "email": email}
+
     def import_paths(self, paths):
         expected = self.expected_paths(paths)
         self.check_library()
@@ -144,6 +181,8 @@ def main():
             result = api.check_library()
         elif request["operation"] == "import":
             result = api.import_paths(request["paths"])
+        elif request["operation"] == "provision_user":
+            result = api.provision_user(request["email"], request["password"])
         else:
             raise ValueError("Unsupported operation")
     except ApiError as exc:

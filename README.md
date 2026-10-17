@@ -74,6 +74,17 @@ docker compose up -d app
 
 ## Telegram 使用
 
+### 邀请注册
+
+管理员发送 `/invite_mode on` 开启邀请注册，发送 `/invite_create` 生成一次性邀请码（`/invite_create 10` 可允许 10 人使用）。把返回的 `/register 邀请码` 发给受邀用户，用户需在 Bot 私聊中发送这条命令才会注册成功。
+
+- `/invites [页码]` 查看邀请码编号及使用次数，不显示原始邀请码。
+- `/invite_revoke 编号` 撤销未用完的邀请码，已注册用户不受影响。
+- `/invite_mode off` 恢复无需邀请码注册；已有用户始终无需重新注册。
+- `/registration off` 是总开关，关闭后即使持有邀请码也不能新注册。
+
+邀请模式默认关闭，配置和使用次数持久化。邀请码为高随机性字符串，数据库仅保存 SHA-256 摘要；明文仅在创建回复中展示，消息发送失败时可通过 `/invites` 找到编号并撤销后重建。注册与扣减次数在同一事务内完成，重复注册不重复扣减。
+
 普通用户先在私聊发送 `/register` 注册，成功后可提交下载、查看自己的任务和阅读入口。`/me` 查看自己的用户 ID 与状态。注册默认开放，开关和注册资料保存在 SQLite，重启不会丢失。
 
 管理员继续使用 `.env` 中的 `TELEGRAM_ALLOWED_USER_IDS`，无需注册：
@@ -87,9 +98,24 @@ docker compose up -d app
 | `/unban 用户ID` | 恢复使用权限，不自动恢复已取消任务 |
 | `/disk` | 管理员查看存储状态 |
 
-注册人数不包含当前配置的管理员；被禁用用户仍计入总人数。管理员身份仅由部署配置决定，不能在聊天中自行提升。注册只提供 Bot 使用权限，不创建或管理 Komga 阅读账户，阅读仍由 Komga 自身鉴权控制。
+注册人数不包含当前配置的管理员；被禁用用户仍计入总人数。管理员身份仅由部署配置决定，不能在聊天中自行提升。
 
-升级启动时自动将数据库 schema 1 迁移到 2，保留原任务与漫画记录。升级前备份数据库；降级旧代码需要恢复升级前备份。
+### 自动开通 Komga 阅读账户
+
+普通用户注册后自动创建 `tg用户ID@jmemby.local`，生成随机密码，只授予配置的漫画库阅读权限，不授予管理、下载或流媒体角色。该邮箱仅用作登录名，不是可收邮件的邮箱。管理员使用原有 Komga 管理账户。
+
+- 注册成功后 Bot 私聊发送邮箱与初始密码；首次登录后请在 Komga 修改密码。
+- 老用户点击「🔑 阅读账号」或发送 `/account` 可补开账号。
+- Komga 不可用时保留 Bot 注册，显示开通失败；重试不重复消耗邀请码。
+- 初始密码发送前加密暂存，成功发送后从数据库清除；此后 `/account` 仅显示邮箱。丢失密码请联系管理员在 Komga 重置。
+- 如果请求结果丢失，重试会用同一密码确认远端账号归属；不会重置或接管已有同名账号。
+- `/ban` 仅禁用 Bot，并不撤销已经创建的 Komga 账号权限。需停止阅读访问时，管理员应同时在 Komga 管理该账号。
+
+新增底部菜单可直达首页、注册、我的账号、阅读账号、任务和阅读入口；管理员额外显示管理面板和用户列表。任务状态使用中文和图标提示。
+
+升级启动时自动将数据库 schema 1/2/3 迁移到 4，保留原任务、用户与漫画记录。升级前备份数据库；降级旧代码需要恢复升级前备份。账号加密密钥位于 `data/app/account.key`，必须与数据库一起备份；`update.sh` 备份整个 `data/app`，单独的数据库备份命令不包含该密钥。不要删除密钥，否则尚未交付的密码无法恢复。
+
+账号管理接口根据 [Komga 官方 UserController](https://github.com/gotson/komga/blob/master/komga/src/main/kotlin/org/gotson/komga/interfaces/api/rest/UserController.kt) 和 [UserCreationDto](https://github.com/gotson/komga/blob/master/komga/src/main/kotlin/org/gotson/komga/interfaces/api/rest/dto/UserCreationDto.kt) 实现，使用 `/api/v2/users`。已完成离线测试，仍需在实际部署版本验收。
 
 - 发送数字漫画 ID 或 `/download ID`，点击确认。
 - `/queue [页码]`、`/status 任务ID`：查询队列和进度。

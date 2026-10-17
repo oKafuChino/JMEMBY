@@ -87,7 +87,33 @@ class Store:
                 PRAGMA user_version=2;
                 COMMIT;
             """)
-        elif version != 2:
+            version = 2
+        if version == 2:
+            self.connection.executescript("""
+                BEGIN IMMEDIATE;
+                INSERT INTO settings VALUES ('invite_required','0');
+                CREATE TABLE invites (
+                    id INTEGER PRIMARY KEY, code_hash TEXT NOT NULL UNIQUE,
+                    max_uses INTEGER NOT NULL CHECK(max_uses>0),
+                    used INTEGER NOT NULL DEFAULT 0,
+                    revoked INTEGER NOT NULL DEFAULT 0,
+                    created_by INTEGER NOT NULL, created_at REAL NOT NULL);
+                PRAGMA user_version=3;
+                COMMIT;
+            """)
+            version = 3
+        if version == 3:
+            self.connection.executescript("""
+                BEGIN IMMEDIATE;
+                CREATE TABLE komga_accounts (
+                    user_id INTEGER PRIMARY KEY REFERENCES users(user_id),
+                    email TEXT NOT NULL UNIQUE, password_encrypted TEXT,
+                    remote_id TEXT, status TEXT NOT NULL DEFAULT 'PENDING',
+                    error_code TEXT, created_at REAL NOT NULL);
+                PRAGMA user_version=4;
+                COMMIT;
+            """)
+        elif version != 4:
             self.connection.close()
             raise RuntimeError("Unsupported database version; restore or migrate before startup")
 
