@@ -1,5 +1,5 @@
 """JMComic adapter, executed in an isolated process by CommandProvider."""
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 import json
 import os
 from pathlib import Path
@@ -10,6 +10,7 @@ import traceback
 import time
 import errno
 import tempfile
+import warnings
 from jmemby.domain.models import normalize_tags
 
 
@@ -38,7 +39,11 @@ def classify_error(exc, phase):
     lower = " ".join(names).lower()
     statuses = [getattr(getattr(item, "response", None), "status_code", None) for item in chain]
     status = next((s for s in statuses if isinstance(s, int) and 100 <= s <= 599), None)
-    if any(isinstance(item, OSError) and item.errno == errno.ENOSPC for item in chain):
+    if any(isinstance(item, MemoryError) for item in chain):
+        code = "MEMORY_LIMIT"
+    elif any(name in ('DecompressionBombWarning', 'DecompressionBombError') for name in names):
+        code = "IMAGE_LIMIT"
+    elif any(isinstance(item, OSError) and item.errno == errno.ENOSPC for item in chain):
         code = "DISK_FULL"
     elif status == 429:
         code = "RATE_LIMIT"
@@ -101,6 +106,20 @@ def initialize_client():
             time.sleep(2 ** attempt)
 
 
+@contextmanager
+def image_pixel_limit(max_pixels):
+    """Reject oversized headers before the SDK allocates decoded pixel buffers."""
+    from PIL import Image
+    previous = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = max_pixels
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', Image.DecompressionBombWarning)
+            yield
+    finally:
+        Image.MAX_IMAGE_PIXELS = previous
+
+
 def handle(request, client):
     operation = request["operation"]
     if operation == "download_batch":
@@ -126,7 +145,8 @@ def handle(request, client):
             number = entry["number"]
             destination = Path(request["directory"]) / f"{number:06d}.part"
             result = handle({"operation": "download", "url": entry["url"],
-                             "destination": str(destination), "max_bytes": request["max_bytes"]}, cached)
+                             "destination": str(destination), "max_bytes": request["max_bytes"],
+                             "max_pixels": request['max_pixels']}, cached)
             if "error" in result:
                 return result
             extension = validate_image(destination, request["max_bytes"], request["max_pixels"])
@@ -168,7 +188,11 @@ def handle(request, client):
         os.close(descriptor)
         decoded = Path(decoded_name)
         try:
-            at_stage("image_download_decode", client.download_by_image_detail, image, str(decoded))
+            pixels = request.get('max_pixels', 50_000_000)
+            if type(pixels) is not int or pixels <= 0:
+                raise ValueError('Invalid pixel limit')
+            with image_pixel_limit(pixels):
+                at_stage("image_download_decode", client.download_by_image_detail, image, str(decoded))
             if not decoded.is_file() or not 0 < decoded.stat().st_size <= limit:
                 return {"error": {"code": "SIZE_LIMIT"}}
             decoded.replace(destination)

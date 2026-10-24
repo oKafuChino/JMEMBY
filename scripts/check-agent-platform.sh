@@ -29,8 +29,8 @@ PY
 sh -n /tmp/agent-installer.sh
 python3 -m unittest discover -s /workspace/tests -p test_native_permissions.py -v
 agent_release=$(cat /tmp/agent-release)
-/tmp/agent-venv/bin/python -m pip install --disable-pip-version-check --no-cache-dir --upgrade pip
-/tmp/agent-venv/bin/python -m pip install --disable-pip-version-check --no-cache-dir \
+/tmp/agent-venv/bin/python -m pip install --disable-pip-version-check --no-cache-dir --no-compile --upgrade pip
+/tmp/agent-venv/bin/python -m pip install --disable-pip-version-check --no-cache-dir --no-compile \
     --only-binary=:all: -r "$agent_release/requirements-agent.txt"
 export PYTHONPATH="$agent_release/src"
 /tmp/agent-venv/bin/python - <<'PY'
@@ -42,6 +42,7 @@ assert sys.version_info >= (3, 11)
 assert AgentSettings('https://example.com', 'test', 'a' * 43).concurrency == 1
 print('Native agent dependency/import smoke test passed:', sys.version)
 PY
+/tmp/agent-venv/bin/python /workspace/scripts/check-agent-memory.py --fixtures /tmp/agent-memory-fixtures
 # Exercise the production preflight as a non-root user, including the venv,
 # private configuration, state directory, log handler and process lock.
 PYTHONPATH=/workspace/src python3 - <<'PY'

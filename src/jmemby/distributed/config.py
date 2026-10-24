@@ -55,7 +55,8 @@ class AgentSettings:
     operation_timeout: int = 300
     max_page_bytes: int = 30 * 1024 * 1024
     max_pixels: int = 50_000_000
-    min_free_space_mb: int = 512
+    min_free_space_mb: int | None = None
+    low_memory: str = 'auto'
 
     @classmethod
     def from_env(cls):
@@ -68,9 +69,13 @@ class AgentSettings:
         agent_id, token = os.getenv("AGENT_ID", ""), os.getenv("AGENT_TOKEN", "")
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,48}", agent_id) or not valid_token(token):
             raise ValueError("Configure AGENT_ID and a random AGENT_TOKEN of at least 32 characters")
+        low_memory = os.getenv('AGENT_LOW_MEMORY', 'auto').strip().lower()
+        if low_memory not in {'auto', 'on', 'off'}:
+            raise ValueError('AGENT_LOW_MEMORY must be auto, on or off')
         return cls(origin, agent_id, token,
                    integer("AGENT_CONCURRENCY", 1, 1, 16), os.getenv("AGENT_WORK_DIR", "/agent-data"),
                    integer("AGENT_OPERATION_TIMEOUT", 300, 10, 3600),
                    integer("AGENT_MAX_PAGE_BYTES", 30 * 1024 * 1024, 1024, 256 * 1024 * 1024),
                    integer("AGENT_MAX_PIXELS", 50_000_000, 1, 100_000_000),
-                   integer("AGENT_MIN_FREE_SPACE_MB", 512, 0, 1048576))
+                   integer("AGENT_MIN_FREE_SPACE_MB", 512, 0, 1048576) if 'AGENT_MIN_FREE_SPACE_MB' in os.environ else None,
+                   low_memory)

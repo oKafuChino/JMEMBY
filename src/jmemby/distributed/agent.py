@@ -15,6 +15,7 @@ import sys
 import tempfile
 
 from jmemby.distributed.config import AgentSettings
+from jmemby.distributed.resources import memory_limit_mb, use_low_memory
 from jmemby.domain.errors import JobError
 from jmemby.domain.models import Page
 from jmemby.providers.builtin import JmProvider
@@ -22,6 +23,17 @@ from jmemby.runtime import JsonFormatter, instance_lock
 from jmemby.storage.cbz import staged_pages, validate_image
 
 logger = logging.getLogger(__name__)
+
+
+def failure_code(exc):
+    if isinstance(exc, JobError):
+        return exc.code if re.fullmatch(r'[A-Z_]{1,64}', exc.code) else 'AGENT_FAILED'
+    if isinstance(exc, BaseExceptionGroup):
+        for child in exc.exceptions:
+            code = failure_code(child)
+            if code != 'AGENT_FAILED':
+                return code
+    return 'AGENT_FAILED'
 
 
 class Rejected(Exception):
@@ -33,10 +45,15 @@ class Rejected(Exception):
 class Agent:
     def __init__(self, settings, provider=None):
         self.settings = settings
+        self.memory_mb = memory_limit_mb()
+        self.low_memory = use_low_memory(settings.low_memory, self.memory_mb)
+        self.batch_size = 1 if self.low_memory else 8
         self.provider = provider or JmProvider(
             json.dumps([sys.executable, '-m', 'jmemby.providers.jm_adapter']), settings.operation_timeout)
         self.root = Path(settings.work_dir).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        logger.info('agent_resources memory_limit_mb=%s low_memory=%s batch_pages=%s',
+                    self.memory_mb, self.low_memory, self.batch_size)
 
     async def request(self, session, method, path, **kwargs):
         # Never forward the bearer token to redirects. TLS verification stays enabled.
@@ -86,6 +103,11 @@ class Agent:
             concurrency = self.settings.concurrency
         if type(concurrency) is not int or not 1 <= concurrency <= 16:
             raise ValueError('Invalid download concurrency')
+        if self.low_memory:
+            # The controller must not override the small node's safety limit.
+            concurrency = 1
+            max_pixels = min(max_pixels, 3_000_000)
+            max_bytes = min(max_bytes, 8 * 1024 * 1024)
 
         async def heartbeat():
             while True:
@@ -94,9 +116,12 @@ class Agent:
                 await asyncio.sleep(min(15, job['lease_seconds'] / 3))
 
         async def download_and_upload():
-            reserve = self.settings.min_free_space_mb * 1024**2
-            # At most eight pages per subprocess, all groups belong to this book.
-            if shutil.disk_usage(self.root).free < reserve + min(len(pages), 8 * concurrency) * max_bytes:
+            reserve_mb = self.settings.min_free_space_mb
+            if reserve_mb is None:
+                reserve_mb = 64 if self.low_memory else 512
+            reserve = reserve_mb * 1024**2
+            # Small nodes recycle the SDK subprocess after every uploaded page.
+            if shutil.disk_usage(self.root).free < reserve + min(len(pages), self.batch_size * concurrency) * max_bytes:
                 raise JobError('DISK_LOW', 'Agent has insufficient temporary disk space')
             with tempfile.TemporaryDirectory(prefix='chapter-', dir=self.root) as directory:
                 stage = Path(directory)
@@ -133,9 +158,14 @@ class Agent:
                                         raise
                                     await asyncio.sleep(1 + attempt)
                             path.unlink()
+                batches = iter(pages[offset:offset + self.batch_size]
+                               for offset in range(0, len(pages), self.batch_size))
+                async def download_worker():
+                    for batch in batches:
+                        await group_download(batch)
                 async with asyncio.TaskGroup() as group:
-                    for offset in range(0, len(pages), 8):
-                        group.create_task(group_download(pages[offset:offset + 8]))
+                    for _ in range(min(concurrency, len(pages))):
+                        group.create_task(download_worker())
                 await self.request(session, 'POST', route + '/complete', headers=headers, json={})
 
         beat = asyncio.create_task(heartbeat())
@@ -146,12 +176,13 @@ class Agent:
                 task.result()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             beat.cancel()
             work.cancel()
             await asyncio.gather(beat, work, return_exceptions=True)
             try:
-                await asyncio.wait_for(self.request(session, 'POST', route + '/fail', headers=headers, json={}), 10)
+                await asyncio.wait_for(self.request(session, 'POST', route + '/fail', headers=headers,
+                                                   json={'code': failure_code(exc)}), 10)
             except Exception:
                 pass  # Expired leases are reclaimed by the controller.
             raise
@@ -187,7 +218,8 @@ class Agent:
                 raise
             except Exception as exc:
                 # No remote URLs, credentials or arbitrary server response text in logs.
-                logger.warning('agent_download_error type=%s status=%s', type(exc).__name__, getattr(exc, 'status', None))
+                logger.warning('agent_download_error type=%s code=%s status=%s',
+                               type(exc).__name__, failure_code(exc), getattr(exc, 'status', None))
                 await asyncio.sleep(5 + random.random() * 5)
 
     async def run(self):

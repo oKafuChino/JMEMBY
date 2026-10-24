@@ -28,6 +28,8 @@ ComicInfo 的系列名（`Series`）和章节标题（`Title`）也会附带 `[J
 
 下载统一由远程 Agent 执行（强制启用，无本机回退）：**每台 VPS 同时下载一本漫画，多台 VPS 并行处理不同漫画**；一本内部可配置图片下载并发。附属机只运行 Agent，通过 HTTPS 主动领取工作并回传图片，主控统一完成去重、双队列调度、用户归属记录、CBZ 打包和 Komga 入库。网页侧边栏“节点管理”支持添加、编辑、启停、删除节点，为每个节点选择服务两种队列、仅普通队列或仅白名单队列，并生成单次有效的一键安装命令，附属 VPS 执行后自动配置原生轻量 Agent（Python 虚拟环境，不需要 Docker/Compose）。支持 Debian 12+ / Ubuntu 24.04+（systemd）和 Alpine 3.20+（OpenRC），新节点默认并发 1 组；至少一个节点在线才开始下载。数据库 schema 15，升级前请备份。配置及故障恢复说明见 [多 VPS 下载部署](docs/DISTRIBUTED_DOWNLOADS.md)。
 
+低内存 Agent 自动识别不超过 256 MiB 的节点，固定单页串行处理，并在 SDK 解码前限制图片像素数；适用于 Alpine 3.23 / 128 MB 等紧张配置。该模式限制单页 300 万像素、8 MiB，不能保证任意大图都能处理。升级主控后需重新生成并执行节点安装命令，详见 [低内存配置与更新说明](docs/DISTRIBUTED_DOWNLOADS.md#alpine-323--128-mb-节点)。
+
 ## 一键安装
 
 适用于 Linux VPS。脚本优先复用现有 Docker；缺失时通过 Debian/Ubuntu 的 apt 软件源安装 Docker 和 Compose v2。其他发行版请提前安装 Docker Engine、Compose v2、Python 3。

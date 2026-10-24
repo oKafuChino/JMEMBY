@@ -99,7 +99,10 @@ def create_app(coordinator):
         return web.json_response({'ok': True})
 
     async def fail(request):
-        coordinator.fail(*ownership(request))
+        data = await request.json() if request.can_read_body else {}
+        if not isinstance(data, dict):
+            raise ValueError('Object required')
+        coordinator.fail(*ownership(request), code=data.get('code'))
         return web.json_response({'ok': True})
 
     async def receive_upload(request):

@@ -152,6 +152,18 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.exception.code, 'AGENT_OFFLINE')
         self.assertFalse((self.root / '000001.png').exists())
 
+    async def test_failure_resource_codes_and_legacy_agents(self):
+        for code in ('MEMORY_LIMIT', 'PROVIDER_KILLED', 'IMAGE_LIMIT', 'DISK_LOW', 'DISK_FULL',
+                     None, 'private token', ['invalid']):
+            with self.subTest(code=code):
+                task, job = await self.start()
+                self.coordinator.fail(job['id'], 'vps-1', job['lease'], code)
+                with self.assertRaises(JobError) as caught:
+                    await asyncio.wait_for(task, 1)
+                resource = isinstance(code, str) and code.isupper()
+                self.assertEqual(caught.exception.code, 'AGENT_RESOURCE_LIMIT' if resource else 'AGENT_FAILED')
+                self.assertNotIn('private token', str(caught.exception))
+
     async def test_heartbeat_and_hard_deadline(self):
         task, job = await self.start()
         self.now += 70
@@ -242,6 +254,8 @@ class LocalTransportAgent(Agent):
             tmp.write_bytes(content)
             self.coordinator.accept(*identity, int(parts[3]), tmp, validate_image(tmp))
             tmp.unlink(missing_ok=True)
+        elif parts[2] == 'fail':
+            self.coordinator.fail(*identity, code=kwargs.get('json', {}).get('code'))
         else:
             getattr(self.coordinator, {'complete': 'finish'}.get(parts[2], parts[2]))(*identity)
         return {'ok': True}
@@ -507,6 +521,40 @@ HAS_AIOHTTP = importlib.util.find_spec('aiohttp') is not None
 
 @unittest.skipUnless(HAS_AIOHTTP, 'aiohttp required for HTTP integration tests')
 class TransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failure_http_codes_legacy_empty_body_and_invalid_payload(self):
+        from aiohttp.test_utils import TestClient, TestServer
+        from jmemby.distributed.server import create_app
+        with tempfile.TemporaryDirectory() as directory:
+            coordinator = Coordinator(MasterSettings(True, TOKENS))
+            coordinator.touch('vps-1')
+            coordinator.assign('vps-1', {'id': 'task'}, manga(1))
+            client = TestClient(TestServer(create_app(coordinator)))
+            await client.start_server()
+            try:
+                for payload, code in [({'code': 'IMAGE_LIMIT'}, 'AGENT_RESOURCE_LIMIT'),
+                                      ({'code': ['invalid']}, 'AGENT_FAILED'),
+                                      ({}, 'AGENT_FAILED'), (None, 'AGENT_FAILED')]:
+                    work = asyncio.create_task(coordinator.download_batch(
+                        'vps-1', [Page(1, 'jm:10:0')], Path(directory), 100000, 10000, 100000))
+                    await asyncio.sleep(0)
+                    job = coordinator.claim('vps-1')
+                    headers = {'X-Agent-ID': 'vps-1', 'Authorization': 'Bearer ' + TOKENS['vps-1'],
+                               'X-Agent-Instance': 'c' * 32, 'X-Lease': job['lease']}
+                    route = '/v1/agent/jobs/' + job['id'] + '/fail'
+                    try:
+                        self.assertEqual((await client.post(route, json=[], headers=headers)).status, 400)
+                        self.assertIsNone(coordinator.jobs[job['id']].error)
+                        kwargs = {'json': payload} if payload is not None else {}
+                        self.assertEqual((await client.post(route, headers=headers, **kwargs)).status, 200)
+                        with self.assertRaises(JobError) as caught:
+                            await asyncio.wait_for(work, 1)
+                        self.assertEqual(caught.exception.code, code)
+                    finally:
+                        work.cancel()
+                        await asyncio.gather(work, return_exceptions=True)
+            finally:
+                await client.close()
+
     async def test_real_http_agent_upload_round_trip(self):
         from aiohttp import ClientSession
         from aiohttp.test_utils import TestClient, TestServer

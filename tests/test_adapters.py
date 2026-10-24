@@ -36,6 +36,43 @@ class SDK:
 
 
 class AdapterTests(unittest.TestCase):
+    def test_pixel_limit_rejects_header_before_sdk_decodes(self):
+        from PIL import Image
+        stream = io.BytesIO()
+        Image.new('RGB', (40, 40)).save(stream, 'PNG')
+        content = stream.getvalue()
+        class DecodingSDK(SDK):
+            loaded = False
+            def download_by_image_detail(self, image, path):
+                with Image.open(io.BytesIO(content)) as decoded:
+                    self.loaded = True
+                    decoded.load()
+                    decoded.save(path, 'JPEG')
+        client = DecodingSDK()
+        previous = Image.MAX_IMAGE_PIXELS
+        with tempfile.TemporaryDirectory() as directory:
+            request = {'operation': 'download_batch', 'pages': [{'number': 1, 'url': 'jm:52:0'}],
+                       'directory': directory, 'max_bytes': 10000, 'max_pixels': 1000, 'budget': 10000}
+            with self.assertRaises(StageError) as caught:
+                handle(request, client)
+            self.assertFalse(client.loaded)
+            self.assertEqual(classify_error(caught.exception, 'download')['error']['code'], 'IMAGE_LIMIT')
+            self.assertEqual(Image.MAX_IMAGE_PIXELS, previous)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+            request['max_pixels'] = 2000
+            self.assertEqual(handle(request, client), {})
+            self.assertTrue(client.loaded)
+            self.assertTrue((Path(directory) / '000001.jpg').is_file())
+            self.assertEqual(Image.MAX_IMAGE_PIXELS, previous)
+
+    def test_memory_and_image_errors_classified_without_private_details(self):
+        from PIL import Image
+        for error, code in [(MemoryError('private'), 'MEMORY_LIMIT'),
+                            (Image.DecompressionBombError('private'), 'IMAGE_LIMIT')]:
+            result = classify_error(error, 'image_download_decode')
+            self.assertEqual(result['error']['code'], code)
+            self.assertNotIn('private', json.dumps(result))
+
     def test_optional_album_tags(self):
         client = SDK()
         self.assertEqual(handle({"operation": "metadata", "id": "42"}, client)["tags"], [])

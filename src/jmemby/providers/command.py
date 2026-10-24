@@ -20,6 +20,9 @@ class CommandProvider:
 
     def error_message(self, code):
         return {
+            "MEMORY_LIMIT": "下载进程内存不足，请降低节点并发或增加可用内存。",
+            "IMAGE_LIMIT": "图片尺寸超过节点允许的解码上限，请使用内存更充足的节点。",
+            "PROVIDER_KILLED": "下载子进程被系统强制结束，请检查节点内存限制和系统 OOM 日志。",
             "TIMEOUT": "禁漫请求超时，请检查 VPS 到数据源的连接。",
             "DISK_FULL": "磁盘已满，释放空间后可手动重试。",
             "SIZE_LIMIT": "下载内容超出大小限制。",
@@ -59,6 +62,9 @@ class CommandProvider:
                     chunks.append(data)
                 await process.wait()
             if process.returncode:
+                logging.getLogger(__name__).warning('provider_exit returncode=%s', process.returncode)
+                if os.name != 'nt' and process.returncode in (-signal.SIGKILL, 137):
+                    raise JobError('PROVIDER_KILLED', self.error_message('PROVIDER_KILLED'), True)
                 raise JobError("PROVIDER_FAILED", "数据源进程执行失败", True)
             result = json.loads(b"".join(chunks))
             if not isinstance(result, dict):

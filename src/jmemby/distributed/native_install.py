@@ -73,12 +73,13 @@ def configure(temporary, root, node):
         'AGENT_MASTER_URL', 'AGENT_ID', 'AGENT_TOKEN', 'AGENT_CONCURRENCY')}
     if any(not re.fullmatch(r'[A-Za-z0-9:/._\[\]-]+', value) for value in values.values()):
         raise ValueError('Agent 配置格式无效')
-    values.update(AGENT_WORK_DIR=state, AGENT_LOG_FILE=state + '/agent.log')
+    values.update(AGENT_WORK_DIR=state, AGENT_LOG_FILE=state + '/agent.log', AGENT_LOW_MEMORY='auto')
     write_private(root / '.env.agent.new', ''.join(key + '=' + value + '\n' for key, value in values.items()))
     # All paths below are installer-owned, not writable by the service account.
     command = shlex.quote(str(root / 'current/venv/bin/python'))
     launcher = ('#!/bin/sh\nset -eu\nset -a\n. ' + shlex.quote(str(root / '.env.agent'))
                 + '\nset +a\nexport PYTHONPATH=' + shlex.quote(str(root / 'current/src'))
+                + '\numask 077\nmkdir -p "$AGENT_WORK_DIR/tmp"\nexport TMPDIR="$AGENT_WORK_DIR/tmp"'
                 + '\nexport PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1\nexec '
                 + command + ' -m jmemby.distributed.agent\n')
     write_private(root / 'run-agent.new', launcher, 0o755)

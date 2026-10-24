@@ -210,10 +210,20 @@ class Coordinator:
             raise LeaseConflict('Some pages have not been uploaded')
         job.done = True
 
-    def fail(self, job_id, agent, lease):
+    def fail(self, job_id, agent, lease, code=None):
         job = self.owned(job_id, agent, lease)
         if not job.done:
-            job.error = JobError('AGENT_FAILED', '远程下载失败，请检查对应 VPS Agent 日志', True)
+            reasons = {
+                'MEMORY_LIMIT': '节点内存不足，请使用低内存模式或内存更充足的节点',
+                'PROVIDER_KILLED': '节点下载进程被强制结束，请检查 VPS 内存限制和 OOM 日志',
+                'IMAGE_LIMIT': '图片超过节点的解码尺寸限制，请改用内存更充足的节点',
+                'DISK_LOW': '节点临时磁盘空间不足，请清理空间或检查保留空间配置',
+                'DISK_FULL': '节点磁盘已满，请先释放空间',
+            }
+            # Do not reflect arbitrary remote strings or credentials to users/logs.
+            reason = reasons.get(code) if isinstance(code, str) else None
+            job.error = JobError('AGENT_RESOURCE_LIMIT' if reason else 'AGENT_FAILED',
+                                 reason or '远程下载失败，请检查对应 VPS Agent 日志', True)
 
     def accept(self, job_id, agent, lease, number, temporary, extension):
         # No awaits between final ownership check, budget accounting and publication.

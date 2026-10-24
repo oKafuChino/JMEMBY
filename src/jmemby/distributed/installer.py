@@ -12,7 +12,7 @@ AGENT_FILES = (
     '__init__.py', 'runtime.py', 'domain/__init__.py', 'domain/models.py', 'domain/errors.py',
     'providers/__init__.py', 'providers/command.py', 'providers/builtin.py', 'providers/jm_adapter.py',
     'storage/__init__.py', 'storage/cbz.py', 'distributed/__init__.py', 'distributed/config.py',
-    'distributed/agent.py',
+    'distributed/agent.py', 'distributed/resources.py',
 )
 REQUIREMENTS = "aiohttp>=3.10,<4\nPillow>=12,<13\njmcomic>=2.5,<3\n"
 
@@ -79,7 +79,10 @@ case "$ID" in
     *) echo '仅支持 Debian、Ubuntu、Alpine。' >&2; exit 1;;
 esac
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else "需要 Python 3.11+；请使用 Debian 12+、Ubuntu 24.04+ 或 Alpine 3.20+。")'
-kpa_tmp=$(mktemp -d)
+# /tmp can be a RAM-backed tmpfs on very small Alpine VPSes.
+mkdir -p /var/tmp
+kpa_tmp=$(mktemp -d /var/tmp/kpa-install.XXXXXX)
+export TMPDIR="$kpa_tmp"
 trap 'rm -rf -- "$kpa_tmp"' EXIT
 cat > "$kpa_tmp/native_install.py" <<'KPA_PY'
 ''' + Path(__file__).with_name('native_install.py').read_text(encoding='utf-8') + r'''
@@ -97,9 +100,9 @@ if [ ! -x "$kpa_release/venv/bin/python" ]; then
         python3 -m venv "$kpa_release/venv"
     fi
 fi
-"$kpa_release/venv/bin/python" -m pip install --disable-pip-version-check --no-cache-dir --upgrade pip
+"$kpa_release/venv/bin/python" -m pip install --disable-pip-version-check --no-cache-dir --no-compile --upgrade pip
 # Binary wheels avoid retaining compilers and build toolchains on small VPSes.
-"$kpa_release/venv/bin/python" -m pip install --disable-pip-version-check --no-cache-dir \
+"$kpa_release/venv/bin/python" -m pip install --disable-pip-version-check --no-cache-dir --no-compile \
     --only-binary=:all: -r "$kpa_release/requirements-agent.txt"
 PYTHONPATH="$kpa_release/src" "$kpa_release/venv/bin/python" -c 'import aiohttp, PIL, jmcomic; import jmemby.distributed.agent'
 # Ticket exchange is not retried: each installation credential succeeds once.

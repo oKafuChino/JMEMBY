@@ -17,8 +17,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ['debian:12-slim', 'ubuntu:24.04', 'alpine:3.20']
+        image: ['debian:12-slim', 'ubuntu:24.04', 'alpine:3.20', 'alpine:3.23']
     steps:
       - uses: actions/checkout@v4
       - name: Check native Agent dependencies and packaged imports
-        run: docker run --rm -v "$PWD:/workspace:ro" '${{ matrix.image }}' sh /workspace/scripts/check-agent-platform.sh
+        run: docker run --name agent-platform -v "$PWD:/workspace:ro" '${{ matrix.image }}' sh /workspace/scripts/check-agent-platform.sh
+      - name: Exercise Alpine Agent under 128 MiB without swap or external network
+        if: matrix.image == 'alpine:3.23'
+        run: |
+          docker commit agent-platform komga-plus-agent-memory
+          docker run --rm --memory=128m --memory-swap=128m --cpus=1 --network=none \
+            -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/workspace:ro" komga-plus-agent-memory sh -c \
+            'export PYTHONPATH="$(cat /tmp/agent-release)/src"; exec /tmp/agent-venv/bin/python /workspace/scripts/check-agent-memory.py'
+      - name: Remove platform test container
+        if: always()
+        run: docker rm -f agent-platform || true
