@@ -80,10 +80,18 @@ def create_app(coordinator):
         data = await request.json()
         if not isinstance(data, dict):
             raise ValueError('Object required')
-        return web.json_response({'job': coordinator.claim(request['agent'])})
+        return web.json_response({'job': coordinator.claim(request['agent']),
+                                  'probe': coordinator.probe_offer(request['agent'])})
 
     async def heartbeat(request):
         coordinator.heartbeat(*ownership(request))
+        return web.json_response({'ok': True, 'probe': coordinator.probe_offer(request['agent'])})
+
+    async def probe_ack(request):
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError('Object required')
+        coordinator.probe_ack(request['agent'], data.get('nonce'))
         return web.json_response({'ok': True})
 
     async def complete(request):
@@ -145,6 +153,7 @@ def create_app(coordinator):
     app.router.add_get('/install/agent.tar.gz', bundle, name='agent-bundle')
     app.router.add_post('/install/enroll/{agent_id}', enroll, name='agent-enroll')
     app.router.add_post(prefix + '/claim', claim)
+    app.router.add_post(prefix + '/probe', probe_ack)
     app.router.add_post(prefix + '/jobs/{job_id}/heartbeat', heartbeat)
     app.router.add_post(prefix + '/jobs/{job_id}/complete', complete)
     app.router.add_post(prefix + '/jobs/{job_id}/fail', fail)

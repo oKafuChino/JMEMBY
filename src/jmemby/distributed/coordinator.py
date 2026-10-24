@@ -40,11 +40,14 @@ class Download:
 
 
 class Coordinator:
+    PROBE_TIMEOUT = 25
+
     def __init__(self, settings, clock=time.monotonic):
         self.settings, self.clock = settings, clock
         self.jobs, self.agents, self.books, self.instances = {}, {}, {}, {}
         self.uploads = set()
         self.registry = None
+        self.probes, self.probe_results = {}, {}
 
     def node_ids(self):
         return self.registry.ids() if self.registry else list(self.settings.tokens)
@@ -69,9 +72,68 @@ class Coordinator:
     def invalidate(self, agent):
         self.agents.pop(agent, None)
         self.instances.pop(agent, None)
+        self.probe_results.pop(agent, None)
+        probe = self.probes.get(agent)
+        if probe and not probe['future'].done():
+            probe['future'].set_result('changed')
         for job in self.jobs.values():
             if job.agent == agent:
                 job.error = JobError('AGENT_CHANGED', '节点配置已变更，任务重新排队', True)
+
+    async def test_connection(self, agent):
+        if agent not in self.node_ids():
+            raise ValueError('节点不存在')
+        if not self.enabled(agent):
+            raise ValueError('请先启用节点，再测试连通性')
+        if self.registry and not self.registry.get(agent)['token_hash']:
+            raise ValueError('节点尚未安装，请先执行安装命令')
+        if agent in self.probes:
+            raise ValueError('该节点正在测试，请稍候')
+        started = self.clock()
+        probe = {'nonce': secrets.token_urlsafe(32), 'future': asyncio.get_running_loop().create_future(),
+                 'started': started, 'revision': self.revision(agent), 'instance': None}
+        self.probes[agent] = probe
+        try:
+            try:
+                outcome = await asyncio.wait_for(probe['future'], self.PROBE_TIMEOUT)
+            except TimeoutError:
+                outcome = 'timeout'
+            if self.revision(agent) != probe['revision']:
+                outcome = 'changed'
+            result = {'status': outcome, 'checked_at': time.time(),
+                      'elapsed_ms': round(max(0, self.clock() - started) * 1000)}
+            if outcome != 'changed' and agent in self.node_ids():
+                self.probe_results[agent] = result
+            return result
+        finally:
+            if self.probes.get(agent) is probe:
+                self.probes.pop(agent)
+
+    def probe_offer(self, agent):
+        probe = self.probes.get(agent)
+        if not probe or probe['future'].done() or not self.enabled(agent):
+            return None
+        if self.clock() - probe['started'] >= self.PROBE_TIMEOUT:
+            return None
+        instance = self.instances.get(agent)
+        if not instance:
+            return None
+        if probe['instance'] is None:
+            probe['instance'] = instance
+        if probe['instance'] != instance:
+            return None
+        return probe['nonce']
+
+    def probe_ack(self, agent, nonce):
+        probe = self.probes.get(agent)
+        if (not probe or probe['future'].done() or not self.enabled(agent)
+                or self.revision(agent) != probe['revision'] or not probe['instance']
+                or self.instances.get(agent) != probe['instance']
+                or self.clock() - probe['started'] >= self.PROBE_TIMEOUT
+                or not isinstance(nonce, str) or not secrets.compare_digest(probe['nonce'], nonce)):
+            raise LeaseConflict('Invalid or expired connectivity probe')
+        self.touch(agent)
+        probe['future'].set_result('success')
 
     def connect(self, agent, instance):
         if not re.fullmatch(r'[0-9a-f]{32}', instance):
@@ -91,6 +153,7 @@ class Coordinator:
         return {"enabled": True, "agents": [
             {**(self.registry.public(name) if self.registry else {'id': name, 'label': name, 'enabled': True, 'concurrency': 2}),
              "online": self.online(name), "task": self.books.get(name),
+             "connectivity_test": self.probe_results.get(name), "testing": name in self.probes,
              "last_seen_seconds": round(max(0, self.clock() - self.agents[name])) if name in self.agents else None,
              "received_pages": sum(len(j.completed) for j in self.jobs.values() if j.agent == name),
              "total_pages": sum(len(j.pages) for j in self.jobs.values() if j.agent == name)}

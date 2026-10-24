@@ -89,7 +89,8 @@ class Agent:
 
         async def heartbeat():
             while True:
-                await self.request(session, 'POST', route + '/heartbeat', headers=headers, json={})
+                response = await self.request(session, 'POST', route + '/heartbeat', headers=headers, json={})
+                await self.answer_probe(session, response)
                 await asyncio.sleep(min(15, job['lease_seconds'] / 3))
 
         async def download_and_upload():
@@ -159,10 +160,22 @@ class Agent:
                 task.cancel()
             await asyncio.gather(beat, work, return_exceptions=True)
 
+    async def answer_probe(self, session, response):
+        nonce = response.get('probe') if isinstance(response, dict) else None
+        if not isinstance(nonce, str) or not re.fullmatch(r'[A-Za-z0-9_-]{32,256}', nonce):
+            return
+        try:
+            async with asyncio.timeout(5):
+                await self.request(session, 'POST', 'probe', json={'nonce': nonce})
+        except Exception as exc:
+            # Diagnostics must never fail an otherwise healthy download/lease.
+            logger.info('agent_probe_failed type=%s', type(exc).__name__)
+
     async def poll(self, session):
         while True:
             try:
                 response = await self.request(session, 'POST', 'claim', json={})
+                await self.answer_probe(session, response)
                 job = response['job']
                 if job:
                     logger.info('agent_chapter_started job=%s', job['id'])

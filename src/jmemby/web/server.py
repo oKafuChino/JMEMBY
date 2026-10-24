@@ -126,6 +126,8 @@ def create_app(service, auth, settings):
             raise ValueError('节点 ID 无效')
         if operation == 'install':
             return web.json_response(registry.issue(name))
+        if operation == 'test':
+            return web.json_response(await coordinator.test_connection(name))
         if operation == 'update':
             registry.update(name, data.get('label'), data.get('concurrency'))
         elif operation == 'enabled':
