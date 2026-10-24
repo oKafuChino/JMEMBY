@@ -75,6 +75,53 @@ if HAS_AIOHTTP:
 
 @unittest.skipUnless(HAS_AIOHTTP, 'aiohttp required for HTTP integration tests')
 class WebTests(unittest.IsolatedAsyncioTestCase):
+    async def test_membership_settings_require_admin_origin_csrf_and_validate_targets(self):
+        from jmemby.services.membership import MembershipService
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / 'db')
+            users = UserService(store, {1})
+            service = TaskService(store, None, users=users)
+            async def chat(chat_id):
+                return SimpleNamespace(id=-1001 if chat_id == '@channel' else -1002,
+                                       type='channel' if chat_id == '@channel' else 'supergroup',
+                                       title='Test', username=chat_id[1:])
+            bot = SimpleNamespace(id=99, get_chat=AsyncMock(side_effect=chat),
+                                  get_chat_member=AsyncMock(return_value=SimpleNamespace(status='administrator')))
+            service.membership = MembershipService(store, users, bot)
+            auth = AdminAuth(users)
+            settings = SimpleNamespace(web_public_url='http://localhost:8080')
+            client = TestClient(TestServer(create_app(service, auth, settings)))
+            await client.start_server()
+            try:
+                self.assertEqual((await client.get('/api/membership')).status, 401)
+                token = auth.login(auth.issue(1))
+                headers = {'Cookie': 'session=' + token, 'Origin': settings.web_public_url}
+                body = {'enabled': True, 'channel': {'chat_id': '@channel'}, 'group': {'chat_id': '@readers'}}
+                self.assertEqual((await client.post('/api/membership', json=body, headers=headers)).status, 403)
+                headers['X-CSRF-Token'] = auth.authenticate(token)['csrf']
+                self.assertEqual((await client.post('/api/membership', json=body,
+                                                   headers={**headers, 'Origin': 'https://evil.test'})).status, 403)
+                bot.get_chat.assert_not_awaited()
+                response = await client.post('/api/membership', json=body, headers=headers)
+                self.assertEqual(response.status, 200)
+                saved = await response.json()
+                self.assertTrue(saved['enabled'])
+                self.assertEqual((await (await client.get('/api/membership', headers=headers)).json()), saved)
+                for invalid in ([], {'enabled': 'yes'}, {'enabled': True, 'channel': {}},
+                                {**body, 'group': {'chat_id': '@readers', 'join_url': 'javascript:alert(1)'}}):
+                    self.assertEqual((await client.post('/api/membership', json=invalid, headers=headers)).status, 400)
+                self.assertEqual(service.membership.config(), saved)
+                bot.get_chat.side_effect = RuntimeError('offline')
+                response = await client.post('/api/membership', json={'enabled': False}, headers=headers)
+                self.assertEqual(response.status, 200)
+                self.assertFalse((await response.json())['enabled'])
+                users.admin_ids = frozenset()
+                self.assertEqual((await client.get('/api/membership', headers=headers)).status, 401)
+                self.assertEqual((await client.post('/api/membership', json=body, headers=headers)).status, 401)
+            finally:
+                await client.close()
+                store.close()
+
     async def test_report_review_auth_csrf_and_resolution(self):
         from jmemby.services.library import LibraryService
         from jmemby.services.community import CommunityService

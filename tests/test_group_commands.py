@@ -126,6 +126,8 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.provider = SimpleNamespace(get_manga=AsyncMock(return_value=manga()))
         self.service = TaskService(self.store, self.provider, users=self.users)
         self.bot = Bot("123456:ABCdef123456")
+        from jmemby.services.membership import MembershipService
+        self.service.membership = MembershipService(self.store, self.users, self.bot)
         self.settings = SimpleNamespace(komga_public_url='https://read.example.com')
         self.accounts = SimpleNamespace(get=lambda user_id: {'status':'READY','email':f'reader{user_id}@example.com'})
         self.dispatcher = create_dispatcher(self.service, self.settings, self.accounts, None)
@@ -165,6 +167,46 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.answer.reset_mock()
         await self.send("/white", user_id=1, kind="private", chat_id=1, reply_to_message=target)
         self.answer.assert_not_awaited()
+
+    async def test_join_gate_covers_registration_download_profile_and_callbacks(self):
+        import json
+        from jmemby.services.membership import KEY
+        config = {'enabled': True,
+                  'channel': {'chat_id': -1001, 'title': 'Channel', 'join_url': 'https://t.me/channel'},
+                  'group': {'chat_id': -1002, 'title': 'Group', 'join_url': 'https://t.me/readers'}}
+        self.store.connection.execute('INSERT INTO settings(key,value) VALUES (?,?)', (KEY, json.dumps(config)))
+        async def membership(chat_id, user_id):
+            return SimpleNamespace(status='administrator' if user_id == self.bot.id else 'left')
+        lookup = self.start_patch(Bot, 'get_chat_member', side_effect=membership)
+        for command in ('/start', '/register', '/my', '/account', '/jm 42', '42', '/like 42', '/report 42', '/random', '/rank'):
+            await self.send(command, kind='private', chat_id=4, user_id=4)
+            self.assertIn('先加入', self.answer.call_args.args[0])
+            self.assertEqual(len(self.answer.call_args.kwargs['reply_markup'].inline_keyboard), 2)
+        self.assertIsNone(self.users.get(4))
+        self.provider.get_manga.assert_not_awaited()
+        self.users.grant(1, 2, True)
+        await self.send('/jm 42')
+        self.assertIn('先加入', self.answer.call_args.args[0])
+        token = self.store.confirmation(manga(), 2, -100)
+        await self.click('confirm', token)
+        self.assertIn('先加入', self.alert.call_args.args[0])
+        self.assertEqual(self.store.tasks(), [])
+        # The gate runs after chat/recipient checks and before application side effects.
+        lookup.reset_mock()
+        await self.send('/jm@OtherBot 42')
+        await self.send('unrelated group message')
+        lookup.assert_not_awaited()
+        await self.send('/start', kind='private', chat_id=1, user_id=1)
+        self.assertIn('欢迎', self.answer.call_args.args[0])
+        lookup.assert_not_awaited()
+        async def joined(chat_id, user_id):
+            return SimpleNamespace(status='administrator' if user_id == self.bot.id else 'member')
+        lookup.side_effect = joined
+        await self.send('/jm 42')
+        self.assertEqual(len(self.store.tasks()), 1)
+        self.users.set_blocked(1, 2, True)
+        await self.send('/jm 43')
+        self.assertIn('禁用', self.answer.call_args.args[0])
 
     async def test_grants_reject_nonadmin_missing_reply_bot_and_anonymous_target(self):
         target = self.message("hello", user_id=3)

@@ -6,6 +6,7 @@ from aiohttp import web
 from jmemby.web.ui import PAGE
 from jmemby.web.batch import BatchDownloads
 from jmemby.services.community import CommunityService
+from jmemby.services.membership import MembershipService
 
 
 def create_app(service, auth, settings):
@@ -42,6 +43,12 @@ def create_app(service, auth, settings):
     app = web.Application(middlewares=[guard], client_max_size=65536)
     batches = BatchDownloads(service)
     community = CommunityService(store, users)
+    membership = getattr(service, 'membership', None) or MembershipService(store, users)
+
+    async def membership_settings(request):
+        if request.method == 'GET':
+            return web.json_response(membership.settings(request['admin']))
+        return web.json_response(await membership.save(request['admin'], await request.json()))
 
     async def batch_lifecycle(app):
         yield
@@ -213,6 +220,7 @@ def create_app(service, auth, settings):
 
     app.add_routes([web.get('/', index), web.post('/api/login', login), web.get('/api/session', session),
                     web.post('/api/logout', logout), web.get('/api/overview', overview),
+                    web.get('/api/membership', membership_settings), web.post('/api/membership', membership_settings),
                     web.get('/api/nodes', nodes), web.post('/api/nodes', node_action),
                     web.get('/api/users', members), web.get('/api/tasks', tasks),
                     web.post('/api/batches', batch_start), web.get('/api/batches', batch_latest),

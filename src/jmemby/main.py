@@ -41,6 +41,8 @@ async def run(settings, db_path, recent_logs):
     diagnostics = Diagnostics(users, worker, komga, recent_logs)
     service = TaskService(store, provider, settings.provider_domains, users)
     service.download_coordinator = coordinator
+    from jmemby.services.membership import MembershipService
+    service.membership = MembershipService(store, users, bot)
     from jmemby.services.library import LibraryService
     service.library = LibraryService(store, users, settings.storage_root, komga, coordinator)
     from jmemby.services.community import CommunityService

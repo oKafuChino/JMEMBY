@@ -13,14 +13,16 @@ from jmemby.bot.presentation import describe, describe_history, normalize, profi
 from jmemby.bot.access import chat_allows, parse_command
 from jmemby.bot.reports import deliver_reports
 from jmemby.services.community import CommunityService
+from jmemby.services.membership import MembershipDenied, MembershipService
 from jmemby.bot.commands import configure_commands
 
 from jmemby.domain.errors import JobError
 
 
 class Authorization(BaseMiddleware):
-    def __init__(self, users):
+    def __init__(self, users, membership=None):
         self.users = users
+        self.membership = membership
         self.bot_username = None
 
     async def __call__(self, handler, event, data):
@@ -42,6 +44,17 @@ class Authorization(BaseMiddleware):
             if recipient.lower() != self.bot_username.lower():
                 return
         command, _, _ = parse_command(normalize(getattr(event, "text", "") or ""))
+        if self.membership is not None:
+            try:
+                await self.membership.require_joined(user.id)
+            except MembershipDenied as exc:
+                if callback:
+                    await event.answer(str(exc) + ' 私聊 /start 查看加入入口。', show_alert=True)
+                else:
+                    buttons = [[InlineKeyboardButton(text='加入 ' + target['title'][:50], url=target['join_url'])]
+                               for target in exc.targets]
+                    await event.answer(str(exc), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None)
+                return
         public = not callback and command in {"/start", "/help", "/register", "/my", "/me"}
         if not public:
             try:
@@ -64,7 +77,8 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
     router = Router()
     users = service.users
     community = CommunityService(service.store, users)
-    guard = Authorization(users)
+    membership = getattr(service, 'membership', None) or MembershipService(service.store, users)
+    guard = Authorization(users, membership)
     router.message.outer_middleware(guard)
     router.callback_query.outer_middleware(guard)
 
