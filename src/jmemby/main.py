@@ -43,6 +43,8 @@ async def run(settings, db_path, recent_logs):
     service.download_coordinator = coordinator
     from jmemby.services.membership import MembershipService
     service.membership = MembershipService(store, users, bot)
+    from jmemby.services.channel_push import ChannelPushService
+    service.channel_push = ChannelPushService(store, users, bot, settings.komga_public_url)
     from jmemby.services.library import LibraryService
     service.library = LibraryService(store, users, settings.storage_root, komga, coordinator)
     from jmemby.services.community import CommunityService
@@ -59,6 +61,7 @@ async def run(settings, db_path, recent_logs):
             await asyncio.sleep(5)
 
     jobs = [asyncio.create_task(worker.run()),
+            asyncio.create_task(service.channel_push.run()),
             asyncio.create_task(notifications(bot, store, settings.komga_public_url, settings.storage_root, community)),
             asyncio.create_task(health()), asyncio.create_task(dispatcher.start_polling(bot))]
     try:

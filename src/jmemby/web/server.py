@@ -7,6 +7,7 @@ from jmemby.web.ui import PAGE
 from jmemby.web.batch import BatchDownloads
 from jmemby.services.community import CommunityService
 from jmemby.services.membership import MembershipService
+from jmemby.services.channel_push import ChannelPushService
 
 
 def create_app(service, auth, settings):
@@ -44,6 +45,12 @@ def create_app(service, auth, settings):
     batches = BatchDownloads(service)
     community = CommunityService(store, users)
     membership = getattr(service, 'membership', None) or MembershipService(store, users)
+    channel_push = getattr(service, 'channel_push', None) or ChannelPushService(store, users)
+
+    async def channel_settings(request):
+        if request.method == 'GET':
+            return web.json_response(channel_push.settings(request['admin']))
+        return web.json_response(await channel_push.save(request['admin'], await request.json()))
 
     async def membership_settings(request):
         if request.method == 'GET':
@@ -221,6 +228,7 @@ def create_app(service, auth, settings):
     app.add_routes([web.get('/', index), web.post('/api/login', login), web.get('/api/session', session),
                     web.post('/api/logout', logout), web.get('/api/overview', overview),
                     web.get('/api/membership', membership_settings), web.post('/api/membership', membership_settings),
+                    web.get('/api/channel-push', channel_settings), web.post('/api/channel-push', channel_settings),
                     web.get('/api/nodes', nodes), web.post('/api/nodes', node_action),
                     web.get('/api/users', members), web.get('/api/tasks', tasks),
                     web.post('/api/batches', batch_start), web.get('/api/batches', batch_latest),

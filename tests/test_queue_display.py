@@ -88,7 +88,7 @@ class QueueDisplayTests(unittest.TestCase):
         before.pop('assigned_node_id')
         before.pop('assigned_node_label')
         self.store.connection.executescript('''
-            DROP INDEX task_created_order;
+            DROP TABLE channel_deliveries; DROP INDEX task_created_order;
             ALTER TABLE tasks DROP COLUMN assigned_node_id;
             ALTER TABLE tasks DROP COLUMN assigned_node_label;
             PRAGMA user_version=13;
@@ -96,7 +96,7 @@ class QueueDisplayTests(unittest.TestCase):
         for _ in range(2):
             self.store.close()
             self.store = Store(self.path)
-            self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0], 14)
+            self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0], 15)
             self.assertEqual(self.store.get(task['id']), {**before, 'assigned_node_id': None, 'assigned_node_label': None})
 
 

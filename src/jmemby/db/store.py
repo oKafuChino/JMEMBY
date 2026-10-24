@@ -257,7 +257,26 @@ class Store:
                 self.connection.close()
                 raise
             version = 14
-        if version != 14:
+        if version == 14:
+            try:
+                self.connection.executescript("""
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE channel_deliveries (
+                        id INTEGER PRIMARY KEY,
+                        task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
+                        chat_id INTEGER NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','SENT','SKIPPED')),
+                        attempts INTEGER NOT NULL DEFAULT 0, next_at REAL NOT NULL DEFAULT 0,
+                        created_at REAL NOT NULL, sent_at REAL, message_id INTEGER, last_error TEXT);
+                    CREATE INDEX channel_delivery_pending ON channel_deliveries(status,id);
+                    PRAGMA user_version=15;
+                    COMMIT;
+                """)
+            except BaseException:
+                self.connection.close()
+                raise
+            version = 15
+        if version != 15:
             self.connection.close()
             raise RuntimeError("Unsupported database version; restore or migrate before startup")
 
@@ -360,6 +379,12 @@ class Store:
             self.update(task_id, status=status, error_code=code, error=error)
             if old['notify_telegram']:
                 db.execute("INSERT OR IGNORE INTO notifications(task_id,event) VALUES (?,?)", (task_id, status))
+            if status == 'COMPLETED':
+                row = db.execute("SELECT value FROM settings WHERE key='channel_push'").fetchone()
+                config = json.loads(row['value']) if row else {}
+                if config.get('enabled') and (old['notify_telegram'] or config.get('include_batch')):
+                    db.execute('INSERT OR IGNORE INTO channel_deliveries(task_id,chat_id,created_at) VALUES (?,?,?)',
+                               (task_id, config['channel']['chat_id'], time.time()))
 
     def user_priority(self, user_id):
         row = self.connection.execute("SELECT user_group,blocked FROM users WHERE user_id=?", (user_id,)).fetchone()

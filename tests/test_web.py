@@ -75,6 +75,48 @@ if HAS_AIOHTTP:
 
 @unittest.skipUnless(HAS_AIOHTTP, 'aiohttp required for HTTP integration tests')
 class WebTests(unittest.IsolatedAsyncioTestCase):
+    async def test_channel_push_settings_auth_csrf_validation_and_no_test_message(self):
+        from jmemby.services.channel_push import ChannelPushService
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / 'db')
+            users = UserService(store, {1})
+            service = TaskService(store, None, users=users)
+            bot = SimpleNamespace(id=99,
+                                  get_chat=AsyncMock(return_value=SimpleNamespace(id=-1001, type='channel', title='Updates')),
+                                  get_chat_member=AsyncMock(return_value=SimpleNamespace(status='administrator', can_post_messages=True)),
+                                  send_message=AsyncMock())
+            service.channel_push = ChannelPushService(store, users, bot)
+            auth = AdminAuth(users)
+            settings = SimpleNamespace(web_public_url='http://localhost:8080')
+            client = TestClient(TestServer(create_app(service, auth, settings)))
+            await client.start_server()
+            try:
+                self.assertEqual((await client.get('/api/channel-push')).status, 401)
+                token = auth.login(auth.issue(1))
+                headers = {'Cookie': 'session=' + token, 'Origin': settings.web_public_url}
+                body = {'enabled': True, 'chat_id': '@updates', 'include_batch': True}
+                self.assertEqual((await client.post('/api/channel-push', json=body, headers=headers)).status, 403)
+                headers['X-CSRF-Token'] = auth.authenticate(token)['csrf']
+                self.assertEqual((await client.post('/api/channel-push', json=body,
+                                                   headers={**headers, 'Origin': 'https://evil.test'})).status, 403)
+                bot.get_chat.assert_not_awaited()
+                response = await client.post('/api/channel-push', json=body, headers=headers)
+                self.assertEqual(response.status, 200)
+                saved = await response.json()
+                self.assertTrue(saved['enabled'])
+                self.assertEqual(saved['channel']['chat_id'], -1001)
+                bot.send_message.assert_not_awaited()
+                for invalid in ([], {'enabled': 'yes'}, {**body, 'include_batch': 1}, {**body, 'chat_id': 'http://evil.test'}):
+                    self.assertEqual((await client.post('/api/channel-push', json=invalid, headers=headers)).status, 400)
+                self.assertEqual(await (await client.get('/api/channel-push', headers=headers)).json(), saved)
+                self.assertEqual((await client.post('/api/channel-push', json={'enabled': False}, headers=headers)).status, 200)
+                users.admin_ids = frozenset()
+                self.assertEqual((await client.get('/api/channel-push', headers=headers)).status, 401)
+                self.assertEqual((await client.post('/api/channel-push', json=body, headers=headers)).status, 401)
+            finally:
+                await client.close()
+                store.close()
+
     async def test_membership_settings_require_admin_origin_csrf_and_validate_targets(self):
         from jmemby.services.membership import MembershipService
         with tempfile.TemporaryDirectory() as directory:

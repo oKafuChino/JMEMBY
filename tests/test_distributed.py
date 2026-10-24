@@ -6,8 +6,9 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from PIL import Image
 
@@ -279,6 +280,13 @@ class PoolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_two_vps_two_whole_books_parallel_priority_preserved(self):
         users = UserService(self.store, {1})
+        from jmemby.services.channel_push import ChannelPushService
+        bot = SimpleNamespace(id=99,
+                              get_chat=AsyncMock(return_value=SimpleNamespace(id=-1001, type='channel', title='Updates')),
+                              get_chat_member=AsyncMock(return_value=SimpleNamespace(status='administrator', can_post_messages=True)),
+                              send_message=AsyncMock(return_value=SimpleNamespace(message_id=55)))
+        channel = ChannelPushService(self.store, users, bot)
+        await channel.save(1, {'enabled': True, 'chat_id': '@updates'})
         users.register(2)
         users.grant(1, 3, True)
         users.register(3)
@@ -306,6 +314,11 @@ class PoolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.store.get(normal['id'])['assigned_node_label'], 'vps-2')
             self.assertIsNone(self.store.get(waiting['id'])['assigned_node_id'])
             self.assertFalse(self.pool.workers[0].active_tasks)
+            self.assertEqual(channel.settings(1)['counts'], {'PENDING': 2})
+            await channel.deliver_once()
+            await channel.deliver_once()
+            self.assertEqual(bot.send_message.await_count, 2)
+            self.assertEqual(channel.settings(1)['counts'], {'SENT': 2})
         finally:
             for task in (first, second): task.cancel()
             await asyncio.gather(first, second, return_exceptions=True)

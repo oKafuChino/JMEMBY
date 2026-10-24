@@ -23,7 +23,7 @@ const document = {body:element(),createElement:element,querySelectorAll:()=>[],
   getElementById(id){if(!elements.has(id))elements.set(id,element());return elements.get(id);}};
 function setTimeout(fn,ms){const id=++serial;timers.set(id,{fn,ms});return id;}
 function clearTimeout(id){timers.delete(id);}
-function clearNodes(){} function clearLibrary(){} function clearReports(){} function clearMembership(){}
+function clearNodes(){} function clearLibrary(){} function clearReports(){} function clearMembership(){} function clearChannelPush(){}
 '''
         checks = r'''
 table=(id,heads,rows)=>{rendered={id,heads,rows};renders++;};
