@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from jmemby.bot.access import chat_allows, parse_command
+from jmemby.bot.access import chat_allows, jm_reply_options, parse_command
 from jmemby.db.store import Store
 from jmemby.domain.models import Chapter, Manga
 from jmemby.services.tasks import TaskService
@@ -17,6 +17,14 @@ def manga():
 
 
 class AccessTests(unittest.TestCase):
+    def test_jm_reply_targets_command_not_replied_to_message(self):
+        for text in ('/jm 42', '/jm', ' /jm@TestBot\n42 ', '/jm\t42'):
+            message = SimpleNamespace(text=text, message_id=123, reply_to_message=SimpleNamespace(message_id=456))
+            self.assertEqual(jm_reply_options(message), {
+                'reply_parameters': {'message_id': 123, 'allow_sending_without_reply': True}})
+        for text in ('42', '/jmx 42', '/start', '/download 42', None):
+            self.assertEqual(jm_reply_options(SimpleNamespace(text=text, message_id=123)), {})
+
     def test_command_arguments_accept_whitespace_and_bot_mentions(self):
         for text in ("/jm 42", " /jm\n42 ", "/jm\t42"):
             self.assertEqual(parse_command(text), ("/jm", "", "42"))
@@ -133,6 +141,7 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.dispatcher = create_dispatcher(self.service, self.settings, self.accounts, None)
         self.pending = self.message(None, user_id=123456, is_bot=True)
         self.pending = self.pending.model_copy(update={"message_id": 99})
+        self.original_answer = Message.answer
         self.answer = self.start_patch(Message, "answer", return_value=self.pending)
         self.edit = self.start_patch(Message, "edit_text")
         self.delete = self.start_patch(Message, "delete")
@@ -182,6 +191,8 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
             await self.send(command, kind='private', chat_id=4, user_id=4)
             self.assertIn('先加入', self.answer.call_args.args[0])
             self.assertEqual(len(self.answer.call_args.kwargs['reply_markup'].inline_keyboard), 2)
+            if command.startswith('/jm'):
+                self.assertEqual(self.answer.call_args.kwargs['reply_parameters']['message_id'], 10)
         self.assertIsNone(self.users.get(4))
         self.provider.get_manga.assert_not_awaited()
         self.users.grant(1, 2, True)
@@ -246,6 +257,8 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
     async def test_jm_direct_submission_and_notification_in_both_group_types(self):
         for kind in ("group", "supergroup"):
             await self.send(f"/jm {self.provider.get_manga.return_value.source_id}", kind=kind)
+            self.assertEqual(self.answer.call_args.kwargs['reply_parameters'],
+                             {'message_id': 10, 'allow_sending_without_reply': True})
             self.assertEqual(self.store.connection.execute("SELECT COUNT(*) FROM confirmations").fetchone()[0], 0)
             task = self.store.tasks()[0]
             self.assertEqual((task["user_id"], task["chat_id"], task["message_id"]), (2, -100, 99))
@@ -267,10 +280,38 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.answer.assert_not_awaited()
         await self.send("/jm")
         self.assertIn("用法", self.answer.call_args.args[0])
+        self.assertEqual(self.answer.call_args.kwargs['reply_parameters']['message_id'], 10)
         self.provider.get_manga.assert_not_awaited()
         await self.send("/jm@tEsTbOt\n42")
+        self.assertEqual(self.answer.call_args.kwargs['reply_parameters']['message_id'], 10)
         self.provider.get_manga.assert_awaited_once_with("42")
         self.get_me.assert_awaited_once()
+
+    async def test_jm_private_denials_and_duplicate_errors_keep_reply_context(self):
+        await self.send('/jm 42', kind='private', chat_id=2)
+        self.assertEqual(self.answer.call_args.kwargs['reply_parameters']['message_id'], 10)
+        original_message = self.store.tasks()[0]['message_id']
+        self.provider.get_manga.reset_mock()
+        await self.send('/jm 42', reply_to_message=self.message('Someone else', user_id=3))
+        self.assertEqual(self.answer.call_args.kwargs['reply_parameters']['message_id'], 10)
+        self.assertIn('重复', self.edit.call_args.args[0])
+        self.assertEqual(self.store.tasks()[0]['message_id'], original_message)
+        self.provider.get_manga.assert_not_awaited()
+        await self.send('/jm 43', kind='private', chat_id=4, user_id=4)
+        self.assertIn('注册', self.answer.call_args.args[0])
+        self.assertEqual(self.answer.call_args.kwargs['reply_parameters']['message_id'], 10)
+        self.users.set_blocked(1, 2, True)
+        await self.send('/jm 43')
+        self.assertIn('禁用', self.answer.call_args.args[0])
+        self.assertEqual(self.answer.call_args.kwargs['reply_parameters']['message_id'], 10)
+
+    async def test_reply_parameters_validate_and_keep_forum_topic(self):
+        message = self.message('/jm 42').model_copy(update={'is_topic_message': True, 'message_thread_id': 777})
+        # Exercise aiogram's actual shortcut serialization without sending to Telegram.
+        send = self.original_answer(message, '处理中', **jm_reply_options(message))
+        self.assertEqual(send.reply_parameters.message_id, message.message_id)
+        self.assertTrue(send.reply_parameters.allow_sending_without_reply)
+        self.assertEqual(send.message_thread_id, 777)
 
     async def test_private_jm_and_plain_id_work_but_download_is_removed(self):
         for text in ("42", "/jm\t42"):

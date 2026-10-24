@@ -8,6 +8,13 @@ def parse_command(text):
     return command, recipient, parts[1] if len(parts) > 1 else ""
 
 
+def jm_reply_options(message):
+    """Reply to the /jm sender's command, even if it replies to somebody else."""
+    if parse_command(getattr(message, 'text', '') or '')[0] != '/jm':
+        return {}
+    return {'reply_parameters': {'message_id': message.message_id, 'allow_sending_without_reply': True}}
+
+
 def chat_allows(chat_type, chat_id, user_id, command="", action=None):
     if chat_type == "private":
         return chat_id == user_id and command not in {"/kk", "/white"}

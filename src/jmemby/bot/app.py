@@ -10,7 +10,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile
 from jmemby.bot.completion import completion_text, read_cover
 from html import escape
 from jmemby.bot.presentation import describe, describe_history, normalize, profile_text
-from jmemby.bot.access import chat_allows, parse_command
+from jmemby.bot.access import chat_allows, jm_reply_options, parse_command
 from jmemby.bot.reports import deliver_reports
 from jmemby.services.community import CommunityService
 from jmemby.services.membership import MembershipDenied, MembershipService
@@ -53,7 +53,8 @@ class Authorization(BaseMiddleware):
                 else:
                     buttons = [[InlineKeyboardButton(text='加入 ' + target['title'][:50], url=target['join_url'])]
                                for target in exc.targets]
-                    await event.answer(str(exc), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None)
+                    await event.answer(str(exc), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
+                                       **jm_reply_options(event))
                 return
         public = not callback and command in {"/start", "/help", "/register", "/my", "/me"}
         if not public:
@@ -68,7 +69,7 @@ class Authorization(BaseMiddleware):
                     text = str(exc)
                     if chat.type in {"group", "supergroup"}:
                         text += "\n注册和账号管理请私聊机器人；群聊下载使用 /jm。"
-                    await event.answer(text)
+                    await event.answer(text, **jm_reply_options(event))
                 return
         return await handler(event, data)
 
@@ -249,9 +250,10 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
                 await message.answer("未知命令，请使用 /help")
             else:
                 if command == "/jm" and not argument:
-                    await message.answer("用法：/jm 漫画ID或链接；群聊中也可使用 /jm@机器人用户名 漫画ID")
+                    await message.answer("用法：/jm 漫画ID或链接；群聊中也可使用 /jm@机器人用户名 漫画ID",
+                                         **jm_reply_options(message))
                     return
-                pending = await message.answer("⏳ 正在获取作品信息，请稍候……")
+                pending = await message.answer("⏳ 正在获取作品信息，请稍候……", **jm_reply_options(message))
                 if command == "/jm":
                     task = await service.download(argument, user_id, message.chat.id)
                     service.store.update(task['id'], message_id=pending.message_id)
@@ -268,7 +270,7 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
             if pending:
                 await pending.edit_text("⚠️ " + str(exc)[:1000])
             else:
-                await message.answer("⚠️ " + str(exc)[:1000])
+                await message.answer("⚠️ " + str(exc)[:1000], **jm_reply_options(message))
 
     @router.callback_query()
     async def callback_handler(callback: CallbackQuery):
