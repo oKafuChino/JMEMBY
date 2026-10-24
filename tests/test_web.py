@@ -75,6 +75,70 @@ if HAS_AIOHTTP:
 
 @unittest.skipUnless(HAS_AIOHTTP, 'aiohttp required for HTTP integration tests')
 class WebTests(unittest.IsolatedAsyncioTestCase):
+    async def test_user_search_and_current_task_node_assignment(self):
+        from jmemby.distributed.config import MasterSettings
+        from jmemby.distributed.coordinator import Coordinator
+        from jmemby.distributed.nodes import NodeRegistry
+        from jmemby.domain.models import Chapter, Manga
+        with tempfile.TemporaryDirectory() as directory:
+            store=Store(Path(directory)/'db')
+            users=UserService(store,{1})
+            users.register(2,'reader_one','漫画读者')
+            users.register(3,'other','Other')
+            service=TaskService(store,None,users=users)
+            auth=AdminAuth(users)
+            coordinator=service.download_coordinator=Coordinator(MasterSettings(True,{}))
+            registry=coordinator.registry=NodeRegistry(store)
+            registry.create('vps-1','First node',1)
+            registry.create('vps-2','Second node',1)
+            manga=Manga('jmcomic','42','Book',(),(Chapter('52',1,'Chapter',()),))
+            task=store.submit(manga,2,2)
+            settings=SimpleNamespace(web_public_url='http://localhost:8080')
+            client=TestClient(TestServer(create_app(service,auth,settings)))
+            await client.start_server()
+            try:
+                for path in ('/api/users?q=reader','/api/tasks'):
+                    self.assertEqual((await client.get(path)).status,401)
+                token=auth.login(auth.issue(1));headers={'Cookie':'session='+token}
+                for query in ('2','@reader_one','读者'):
+                    response=await client.get('/api/users',params={'q':query},headers=headers)
+                    self.assertEqual(response.status,200)
+                    self.assertEqual([u['user_id'] for u in await response.json()],[2])
+                for query in ('missing','%'):
+                    response=await client.get('/api/users',params={'q':query},headers=headers)
+                    self.assertEqual(await response.json(),[])
+                self.assertEqual((await client.get('/api/users',params={'q':'x'*201},headers=headers)).status,400)
+                self.assertEqual((await client.get('/api/users?page=0&q=reader',headers=headers)).status,400)
+                async def current_node():
+                    response=await client.get('/api/tasks?queue=normal',headers=headers)
+                    self.assertEqual(response.status,200)
+                    rows=await response.json()
+                    return next(t['node'] for t in rows if t['id']==task['id'])
+                self.assertIsNone(await current_node())
+                store.update(task['id'],status='DOWNLOADING')
+                coordinator.assign('vps-1',task,manga)
+                self.assertEqual(await current_node(),{'id':'vps-1','label':'First node'})
+                registry.update('vps-1','Renamed',1)
+                self.assertEqual((await current_node())['label'],'Renamed')
+                for status in ('PACKAGING','IMPORT_PENDING','CANCEL_REQUESTED'):
+                    store.update(task['id'],status=status)
+                    self.assertEqual((await current_node())['id'],'vps-1')
+                coordinator.unassign('vps-1')
+                store.update(task['id'],status='RETRY_WAIT')
+                self.assertIsNone(await current_node())
+                coordinator.assign('vps-2',task,manga)
+                self.assertEqual((await current_node())['id'],'vps-2')
+                coordinator.unassign('vps-2')
+                store.update(task['id'],status='COMPLETED')
+                self.assertIsNone(await current_node())
+                service.download_coordinator=None
+                self.assertIsNone(await current_node())
+                users.admin_ids=frozenset()
+                self.assertEqual((await client.get('/api/users?q=reader',headers=headers)).status,401)
+            finally:
+                await client.close()
+                store.close()
+
     async def test_batch_submission_auth_csrf_actor_and_progress(self):
         from jmemby.domain.models import Chapter, Manga
         with tempfile.TemporaryDirectory() as directory:

@@ -141,9 +141,21 @@ class UserService:
                 "admins": len(self.admin_ids), "registration_open": self.registration_open(),
                 "invite_required": self.invite_required()}
 
-    def list_users(self, actor, page=1):
+    def list_users(self, actor, page=1, query=""):
         self.require_admin(actor)
         if not 1 <= page <= 1_000_000:
             raise ValueError("页码无效")
+        if not isinstance(query, str) or len(query) > 200:
+            raise ValueError("搜索关键词最多 200 个字符")
+        query = query.strip()
+        where, params = "", ()
+        if query:
+            def pattern(value):
+                return '%' + value.replace('!', '!!').replace('%', '!%').replace('_', '!_') + '%'
+            where = (" WHERE CAST(user_id AS TEXT) LIKE ? ESCAPE '!'"
+                     " OR username LIKE ? ESCAPE '!' OR display_name LIKE ? ESCAPE '!'")
+            username_query = query[1:] if query.startswith('@') and len(query) > 1 else query
+            params = (pattern(query), pattern(username_query), pattern(query))
         return [dict(r) for r in self.store.connection.execute(
-            "SELECT * FROM users ORDER BY registered_at DESC,user_id LIMIT 10 OFFSET ?", ((page - 1) * 10,))]
+            "SELECT * FROM users" + where + " ORDER BY registered_at DESC,user_id LIMIT 10 OFFSET ?",
+            (*params, (page - 1) * 10))]

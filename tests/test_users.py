@@ -11,6 +11,43 @@ from jmemby.services.users import UserService
 
 
 class UsersTests(unittest.IsolatedAsyncioTestCase):
+    def test_user_search_by_id_username_and_display_name(self):
+        self.users.register(12345, 'Reader_One', '漫画读者')
+        self.users.register(67890, 'Another', 'Other')
+        for query in ('12345', '234', 'reader', '@READER_one', '漫画', ' 读者 '):
+            with self.subTest(query=query):
+                self.assertEqual([u['user_id'] for u in self.users.list_users(1, query=query)], [12345])
+        self.assertEqual(self.users.list_users(1, query='missing'), [])
+        self.assertEqual(self.users.list_users(1, query='@'), [])
+        self.assertEqual(len(self.users.list_users(1, query='  ')), 2)
+
+    def test_user_search_matches_literal_wildcards_and_sql_text(self):
+        self.users.register(2, 'literal_%!', 'Literal')
+        self.users.register(3, 'ordinary', 'Ordinary')
+        for query in ('_', '%', '!', '@literal_%!'):
+            self.assertEqual([u['user_id'] for u in self.users.list_users(1, query=query)], [2])
+        self.assertEqual(self.users.list_users(1, query="' OR 1=1 --"), [])
+
+    def test_user_search_filters_before_pagination_and_keeps_groups(self):
+        for uid in range(2, 26):
+            self.users.register(uid, 'reader'+str(uid), 'Match' if uid%2==0 else 'Other')
+            self.store.connection.execute('UPDATE users SET registered_at=100 WHERE user_id=?', (uid,))
+        self.users.grant(1, 2, True)
+        self.users.set_blocked(1, 4, True)
+        first=self.users.list_users(1, 1, 'Match');second=self.users.list_users(1, 2, 'Match')
+        self.assertEqual([u['user_id'] for u in first+second], list(range(2,26,2)))
+        self.assertEqual(first[0]['user_group'], 'white')
+        self.assertTrue(first[1]['blocked'])
+        self.assertEqual(self.users.list_users(1, 3, 'Match'), [])
+
+    def test_user_search_requires_admin_and_valid_query(self):
+        self.users.register(2)
+        with self.assertRaises(ValueError):self.users.list_users(2, query='2')
+        for query in ('x'*201, None, [], 12):
+            with self.assertRaises(ValueError):self.users.list_users(1, query=query)
+        for page in (0, 1000001):
+            with self.assertRaises(ValueError):self.users.list_users(1, page, '2')
+
     def test_invitation_required_and_single_use(self):
         self.users.set_invite_required(1, True)
         number, code = self.users.create_invite(1)

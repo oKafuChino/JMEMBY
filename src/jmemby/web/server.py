@@ -144,7 +144,7 @@ def create_app(service, auth, settings):
         return web.json_response({'ok': True})
 
     async def members(request):
-        rows = users.list_users(request['admin'], page_number(request))
+        rows = users.list_users(request['admin'], page_number(request), request.query.get('q', ''))
         for row in rows:
             row['is_admin'] = users.is_admin(row['user_id'])
         return web.json_response(rows)
@@ -159,7 +159,10 @@ def create_app(service, auth, settings):
             'FROM tasks t JOIN manga m ON m.id=t.manga_id' + where +
             " ORDER BY CASE WHEN t.status IN ('COMPLETED','FAILED','CANCELLED') THEN 1 ELSE 0 END,t.priority DESC,t.queue_sequence LIMIT 20 OFFSET ?",
             ((page_number(request) - 1) * 20,)).fetchall()
-        return web.json_response([dict(r) for r in rows])
+        coordinator = getattr(service, 'download_coordinator', None)
+        assignments = {a['task']['task_id']: {'id': a['id'], 'label': a['label']}
+                       for a in coordinator.snapshot()['agents'] if a.get('task')} if coordinator else {}
+        return web.json_response([{**dict(r), 'node': assignments.get(r['id'])} for r in rows])
 
     async def history(request):
         rows = service.recent_downloads(request['admin'], request.query.get('q', ''))
