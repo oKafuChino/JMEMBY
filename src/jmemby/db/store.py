@@ -187,6 +187,22 @@ class Store:
         return [dict(r) for r in self.connection.execute(
             "SELECT * FROM tasks" + where + " ORDER BY created_at DESC LIMIT 10 OFFSET ?", (*args, page * 10))]
 
+    def recent_downloads(self, query=""):
+        query = query.strip()
+        if len(query) > 200:
+            raise ValueError("搜索内容最多 200 个字符")
+        fields = ("m.title", "m.source_id", "t.id", "CAST(t.user_id AS TEXT)",
+                  "CASE WHEN COALESCE(u.username,'')<>'' THEN '@'||u.username ELSE '' END",
+                  "COALESCE(u.display_name,'')")
+        where = " WHERE " + " OR ".join(f"instr(lower({field}),lower(?))>0" for field in fields) if query else ""
+        rows = self.connection.execute(
+            "SELECT t.id,m.title,m.source,m.source_id,t.user_id,u.username,u.display_name,"
+            "t.status,t.priority,t.created_at,t.retry_of FROM tasks t "
+            "JOIN manga m ON m.id=t.manga_id LEFT JOIN users u ON u.user_id=t.user_id" + where +
+            " ORDER BY t.created_at DESC,t.rowid DESC LIMIT 100",
+            (query,) * len(fields) if query else ()).fetchall()
+        return [dict(row) for row in rows]
+
     def download_history(self, source, source_id, page=1):
         if not 1 <= page <= 1_000_000:
             raise ValueError("页码无效")

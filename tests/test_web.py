@@ -86,12 +86,24 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
                 await client.start_server()
                 try:
                     self.assertEqual((await client.get('/api/users')).status, 401)
+                    self.assertEqual((await client.get('/api/history')).status, 401)
                     response = await client.post('/api/login', json={'code': auth.issue(1)}, headers={'Origin': settings.web_public_url})
                     self.assertEqual(response.status, 200)
                     token = response.cookies['session'].value
                     headers = {'Cookie': 'session=' + token, 'Origin': settings.web_public_url}
                     response = await client.get('/api/session', headers=headers)
                     csrf = (await response.json())['csrf']
+                    from jmemby.domain.models import Chapter, Manga
+                    task = store.submit(Manga('jmcomic', '42', 'Searchable Book', (),
+                                              (Chapter('52', 1, 'Chapter', ()),)), 2, 2)
+                    response = await client.get('/api/history', headers=headers)
+                    history = await response.json()
+                    self.assertEqual((history['limit'], history['tasks'][0]['id']), (100, task['id']))
+                    response = await client.get('/api/history', params={'q': 'searchable'}, headers=headers)
+                    self.assertEqual(len((await response.json())['tasks']), 1)
+                    response = await client.get('/api/history', params={'q': 'absent'}, headers=headers)
+                    self.assertEqual((await response.json())['tasks'], [])
+                    self.assertEqual((await client.get('/api/history', params={'q': 'x'*201}, headers=headers)).status, 400)
                     self.assertEqual((await client.post('/api/action', json={'action':'ban','user_id':2}, headers=headers)).status, 403)
                     headers['X-CSRF-Token'] = csrf
                     self.assertEqual((await client.post('/api/action', json={'action':'ban','user_id':2}, headers=headers)).status, 200)

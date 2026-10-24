@@ -30,6 +30,12 @@ class TaskService:
             raise ValueError("任务不存在")
         return task
 
+    def recent_downloads(self, user_id, query=""):
+        if not self.users:
+            raise ValueError("此功能仅管理员可用")
+        self.users.require_admin(user_id)
+        return self.store.recent_downloads(query)
+
     def download_history(self, reference, user_id, page=1):
         if not self.users:
             raise ValueError("此功能仅管理员可用")

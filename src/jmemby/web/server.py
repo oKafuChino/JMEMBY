@@ -3,7 +3,6 @@ import secrets
 
 from aiohttp import web
 
-from jmemby.bot.presentation import describe_history
 from jmemby.web.ui import PAGE
 
 
@@ -97,8 +96,8 @@ def create_app(service, auth, settings):
         return web.json_response([dict(r) for r in rows])
 
     async def history(request):
-        record = service.download_history(request.query.get('id', ''), request['admin'], page_number(request))
-        return web.json_response({'text': describe_history(record)})
+        rows = service.recent_downloads(request['admin'], request.query.get('q', ''))
+        return web.json_response({'tasks': rows, 'limit': 100})
 
     async def action(request):
         data = await request.json()
