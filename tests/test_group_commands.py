@@ -126,7 +126,9 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.provider = SimpleNamespace(get_manga=AsyncMock(return_value=manga()))
         self.service = TaskService(self.store, self.provider, users=self.users)
         self.bot = Bot("123456:ABCdef123456")
-        self.dispatcher = create_dispatcher(self.service, SimpleNamespace(), None, None)
+        self.settings = SimpleNamespace(komga_public_url='https://read.example.com')
+        self.accounts = SimpleNamespace(get=lambda user_id: {'status':'READY','email':f'reader{user_id}@example.com'})
+        self.dispatcher = create_dispatcher(self.service, self.settings, self.accounts, None)
         self.pending = self.message(None, user_id=123456, is_bot=True)
         self.pending = self.pending.model_copy(update={"message_id": 99})
         self.answer = self.start_patch(Message, "answer", return_value=self.pending)
@@ -199,10 +201,10 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
     def token(self):
         return self.store.connection.execute("SELECT token FROM confirmations ORDER BY rowid DESC LIMIT 1").fetchone()[0]
 
-    async def test_jm_preview_confirmation_and_notification_in_both_group_types(self):
+    async def test_jm_direct_submission_and_notification_in_both_group_types(self):
         for kind in ("group", "supergroup"):
             await self.send(f"/jm {self.provider.get_manga.return_value.source_id}", kind=kind)
-            await self.click("confirm", self.token())
+            self.assertEqual(self.store.connection.execute("SELECT COUNT(*) FROM confirmations").fetchone()[0], 0)
             task = self.store.tasks()[0]
             self.assertEqual((task["user_id"], task["chat_id"], task["message_id"]), (2, -100, 99))
             self.store.finish(task["id"], "COMPLETED")
@@ -229,12 +231,56 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.get_me.assert_awaited_once()
 
     async def test_private_jm_and_plain_id_work_but_download_is_removed(self):
-        for text in ("/jm\t42", "42"):
+        for text in ("42", "/jm\t42"):
             await self.send(text, kind="private", chat_id=2)
         self.assertEqual(self.provider.get_manga.await_count, 2)
         await self.send("/download 42", kind="private", chat_id=2)
         self.assertIn("未知命令", self.answer.call_args.args[0])
         self.assertEqual(self.provider.get_manga.await_count, 2)
+
+    async def test_removed_commands_no_longer_execute(self):
+        task=self.store.submit(manga(),2,2)
+        for command in ('/queue','/status','/cancel','/retry','/library'):
+            await self.send(command+' '+task['id'],kind='private',chat_id=2)
+            self.assertIn('未知命令',self.answer.call_args.args[0])
+        self.assertEqual(self.store.get(task['id'])['status'],'QUEUED')
+        self.provider.get_manga.assert_not_awaited()
+
+    async def test_my_and_new_community_commands_are_private(self):
+        task=self.store.submit(manga(),2,2)
+        self.store.update_chapter(self.store.chapters(task['id'])[0]['id'],status='IMPORTED')
+        self.store.finish(task['id'],'COMPLETED')
+        for text in ('/my','/like 42','/report 42','/random','/rank'):
+            await self.send(text)
+        self.answer.assert_not_awaited()
+        await self.send('/my',kind='private',chat_id=2)
+        self.assertIn('reader2@example.com',self.answer.call_args.args[0])
+        self.assertIn('https://read.example.com',self.answer.call_args.args[0])
+        await self.send('/like 42',kind='private',chat_id=2)
+        self.assertIn('点赞成功',self.answer.call_args.args[0])
+        await self.send('/like 42',kind='private',chat_id=2)
+        self.assertIn('已点过赞',self.answer.call_args.args[0])
+        await self.send('/report 42',kind='private',chat_id=2)
+        self.assertIn('举报已记录',self.answer.call_args.args[0])
+        self.assertEqual(self.store.connection.execute('SELECT COUNT(*) FROM report_deliveries').fetchone()[0],1)
+        for text in ('/random','/rank'):
+            await self.send(text,kind='private',chat_id=2)
+            self.assertIn('42',self.answer.call_args.args[0])
+        for text in ('/like','/report','/rank extra','/random extra'):
+            await self.send(text,kind='private',chat_id=2)
+            self.assertIn('用法',self.answer.call_args.args[0])
+        self.provider.get_manga.assert_not_awaited()
+
+    async def test_published_command_menus_remove_legacy_commands(self):
+        from jmemby.bot.commands import configure_commands
+        bot=SimpleNamespace(set_my_commands=AsyncMock())
+        await configure_commands(bot)
+        calls=bot.set_my_commands.call_args_list
+        self.assertEqual(len(calls),3)
+        private={c.command for c in calls[1].args[0]}
+        self.assertTrue({'jm','my','report','like','random','rank'} <= private)
+        self.assertFalse({'queue','status','cancel','retry','library'} & private)
+        self.assertEqual([c.command for c in calls[2].args[0]],['jm'])
 
     async def test_unregistered_blocked_anonymous_and_channel_senders_cannot_download(self):
         await self.send("/jm 42", user_id=3)
@@ -250,7 +296,7 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.provider.get_manga.assert_not_awaited()
 
     async def test_other_members_cannot_confirm_or_delete_preview(self):
-        await self.send("/jm 42")
+        await self.service.preview("42", 2, -100)
         for action in ("confirm", "dismiss"):
             await self.click(action, self.token(), user_id=1)
             self.assertTrue(self.alert.call_args.kwargs["show_alert"])
@@ -260,7 +306,7 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.delete.assert_awaited_once()
 
     async def test_forwarded_buttons_and_other_callback_actions_are_rejected(self):
-        await self.send("/jm 42")
+        await self.service.preview("42", 2, -100)
         for action in ("confirm", "dismiss"):
             await self.click(action, self.token(), message=self.message(None, chat_id=-200))
         await self.click("sched", "old")
@@ -269,7 +315,7 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cross_chat_duplicate_does_not_overwrite_message_even_with_same_id(self):
         for message_id in (None, 99):
-            await self.send("/jm 42")
+            await self.service.preview("42", 2, -100)
             token = self.token()
             first = self.store.submit(manga(), 2, 2)
             self.store.update(first["id"], message_id=message_id)

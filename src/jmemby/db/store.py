@@ -200,7 +200,33 @@ class Store:
                 self.connection.close()
                 raise
             version = 11
-        if version != 11:
+        if version == 11:
+            try:
+                self.connection.executescript("""
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE manga_likes (
+                        manga_id INTEGER NOT NULL REFERENCES manga(id),
+                        user_id INTEGER NOT NULL, created_at REAL NOT NULL,
+                        PRIMARY KEY(manga_id,user_id));
+                    CREATE TABLE manga_reports (
+                        id INTEGER PRIMARY KEY,
+                        manga_id INTEGER NOT NULL REFERENCES manga(id),
+                        user_id INTEGER NOT NULL, created_at REAL NOT NULL,
+                        UNIQUE(manga_id,user_id));
+                    CREATE TABLE report_deliveries (
+                        report_id INTEGER NOT NULL REFERENCES manga_reports(id),
+                        admin_id INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING',
+                        attempts INTEGER NOT NULL DEFAULT 0, next_at REAL NOT NULL DEFAULT 0,
+                        PRIMARY KEY(report_id,admin_id));
+                    CREATE INDEX pending_reports ON report_deliveries(status,next_at);
+                    PRAGMA user_version=12;
+                    COMMIT;
+                """)
+            except BaseException:
+                self.connection.close()
+                raise
+            version = 12
+        if version != 12:
             self.connection.close()
             raise RuntimeError("Unsupported database version; restore or migrate before startup")
 
@@ -346,7 +372,7 @@ class Store:
             confirmation = db.execute("SELECT * FROM confirmations WHERE token=?", (token,)).fetchone()
             self._check_confirmation(confirmation, user_id, chat_id)
             if confirmation["task_id"]:
-                raise ValueError("任务已确认，不能取消预览；请私聊使用 /cancel 任务ID")
+                raise ValueError("任务已确认，不能取消预览；请联系管理员在网页下载队列取消")
             db.execute("UPDATE confirmations SET dismissed=1 WHERE token=?", (token,))
 
     @staticmethod

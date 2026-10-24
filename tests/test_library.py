@@ -168,11 +168,11 @@ class LibraryTests(unittest.IsolatedAsyncioTestCase):
 
     def test_schema_ten_migration_and_removal_survive_restart(self):
         manga, task, _ = self.book()
-        self.store.connection.executescript('ALTER TABLE manga DROP COLUMN removed_at; PRAGMA user_version=10;')
+        self.store.connection.executescript('DROP TABLE report_deliveries; DROP TABLE manga_reports; DROP TABLE manga_likes; ALTER TABLE manga DROP COLUMN removed_at; PRAGMA user_version=10;')
         self.store.close();self.store=Store(self.path)
         self.users=UserService(self.store,{1})
         self.library=LibraryService(self.store,self.users,self.root,self.komga)
-        self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0],11)
+        self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0],12)
         with self.assertRaises(ValueError):self.store.submit(manga,2,2)
         self.library.remove_files(1,task['manga_id'])
         self.store.close();self.store=Store(self.path)

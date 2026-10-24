@@ -9,8 +9,11 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile, InputMediaPhoto
 from jmemby.bot.completion import completion_text, read_cover
 from html import escape
-from jmemby.bot.presentation import describe, describe_history, normalize
+from jmemby.bot.presentation import describe, describe_history, normalize, profile_text
 from jmemby.bot.access import chat_allows, parse_command
+from jmemby.bot.reports import deliver_reports
+from jmemby.services.community import CommunityService
+from jmemby.bot.commands import configure_commands
 
 from jmemby.domain.errors import JobError
 
@@ -39,7 +42,7 @@ class Authorization(BaseMiddleware):
             if recipient.lower() != self.bot_username.lower():
                 return
         command, _, _ = parse_command(normalize(getattr(event, "text", "") or ""))
-        public = not callback and command in {"/start", "/help", "/register", "/me"}
+        public = not callback and command in {"/start", "/help", "/register", "/my", "/me"}
         if not public:
             try:
                 if command in {"/kk", "/white"}:
@@ -60,15 +63,16 @@ class Authorization(BaseMiddleware):
 def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
     router = Router()
     users = service.users
+    community = CommunityService(service.store, users)
     guard = Authorization(users)
     router.message.outer_middleware(guard)
     router.callback_query.outer_middleware(guard)
 
     def menu(user_id):
-        rows = [["🏠 首页", "👤 我的账号"], ["📝 注册", "🔑 阅读账号"], ["📋 我的任务", "📚 阅读入口"]]
+        rows = [["🏠 首页", "👤 我的账号"], ["📝 注册", "🔑 阅读账号"], ["🎲 随机推荐", "🏆 人气排行"]]
         if users.is_admin(user_id):
             rows.append(["⚙️ 管理面板", "👥 用户列表"])
-            rows.append(["🩺 服务状态", "📜 最近日志"])
+            rows.append(["🌐 网页管理", "📜 最近日志"])
         return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=t) for t in row] for row in rows], resize_keyboard=True)
 
     async def reading_account(message, user_id):
@@ -106,16 +110,16 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
                 result = users.grant(user_id, target.id, white=command == "/white")
                 await message.answer(f"✅ 用户 {target.id}：{result}。\n用户组：{users.group_label(target.id)}\n未注册用户请私聊机器人发送 /register；阅读账号只在私聊领取。")
             elif command in {"/start", "/help"}:
-                help_text = "📚 欢迎使用 Komga Plus\n\n① 注册账号 → ② 发送漫画 ID → ③ 确认下载\n\n/register [邀请码] 注册\n/account 领取或补开阅读账号\n/me 我的信息\n/queue 我的任务\n/status 任务ID 查看进度\n/cancel 任务ID 取消任务\n/retry 任务ID 重试\n/library 开始阅读"
+                help_text = "📚 欢迎使用 Komga Plus\n\n① 注册账号 → ② /jm 漫画ID → ③ 自动加入下载队列\n\n/register [邀请码] 注册\n/account 领取或补开阅读账号\n/my 我的信息、阅读账号和服务器地址\n/report ID 举报不合适内容\n/like ID 给漫画点赞\n/random 随机推荐一本漫画\n/rank 人气前十"
                 if users.invite_required():
                     help_text += "\n当前为邀请注册：请向管理员获取邀请码"
                 if users.is_admin(user_id):
                     help_text += "\n/web 网页管理面板登录（仅私聊）"
-                    help_text += "\n/status 服务状态\n/logs 最近 100 条应用日志\n/who 漫画ID或链接 [页码] 查询下载来源（仅私聊）"
+                    help_text += "\n/logs 最近 100 条应用日志\n/who 漫画ID或链接 [页码] 查询下载来源（仅私聊）"
                     help_text += "\n管理员：/admin /users [页码]\n/registration on|off\n/ban 用户ID /unban 用户ID\n/disk 磁盘状态"
                     help_text += "\n/invite_mode on|off\n/invite_create [次数]\n/invites [页码]\n/invite_revoke 编号"
                     help_text += "\n群聊回复用户：/kk 授予注册资格，/white 设为白名单"
-                help_text += "\n/jm ID或链接 查询并确认下载\n群聊普通用户仅支持 /jm；请先在私聊注册。"
+                help_text += "\n/jm ID或链接 直接下载，无需确认\n群聊普通用户仅支持 /jm；请先在私聊注册。"
                 await message.answer(help_text, reply_markup=menu(user_id))
             elif command == "/register":
                 result = users.register(user_id, message.from_user.username, message.from_user.full_name, argument.strip())
@@ -124,20 +128,23 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
                     await reading_account(message, user_id)
             elif command == "/account":
                 await reading_account(message, user_id)
-            elif command == "/me":
+            elif command in {"/my", "/me"}:
                 account = users.get(user_id)
                 status = "管理员" if users.is_admin(user_id) else "未注册" if not account else "已禁用" if account["blocked"] else "已注册"
                 reading = accounts.get(user_id)
-                reading_status = "已开通" if reading and reading["status"] == "READY" else "待开通"
                 status += f"；组别：{users.group_label(user_id)}"
-                await message.answer(f"👤 我的账号\n\n用户 ID：{user_id}\nBot 状态：{status}\n阅读账号：{reading_status}\n\n点击「🔑 阅读账号」领取或重试开通。", reply_markup=menu(user_id))
+                # Blocked users can view status but receive no reading account details.
+                if account and account['blocked'] and not users.is_admin(user_id):
+                    await message.answer(f"用户 ID：{user_id}\n账号已被禁用，请联系管理员", reply_markup=menu(user_id))
+                else:
+                    await message.answer(profile_text(user_id, status, reading, settings.komga_public_url, users.is_admin(user_id)), reply_markup=menu(user_id))
             elif command == "/admin":
                 stats = users.statistics(user_id)
                 await message.answer(
                     f"⚙️ 管理面板\n\n👥 注册总数：{stats['total']}\n✅ 正常：{stats['active']}  🚫 禁用：{stats['blocked']}\n"
                     f"🛡 管理员：{stats['admins']}\n\n📝 新注册：{'开放' if stats['registration_open'] else '关闭'}\n"
                     f"🎟 邀请注册：{'开启' if stats['invite_required'] else '关闭'}\n\n"
-                    "/status 服务状态\n/logs 最近 100 条应用日志\n/users [页码] 查看用户\n/registration on|off 注册开关\n/invite_mode on|off 邀请模式\n"
+                    "/logs 最近 100 条应用日志\n/users [页码] 查看用户\n/registration on|off 注册开关\n/invite_mode on|off 邀请模式\n"
                     "/invite_create [次数] 生成邀请码\n/invites [页码] 邀请记录\n/invite_revoke 编号 撤销邀请码\n"
                     "/ban 用户ID 禁用 Bot\n/unban 用户ID 解禁 Bot\n\nKomga 账号权限请在 Komga 管理。",
                     reply_markup=menu(user_id))
@@ -174,22 +181,11 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
                 target = int(argument.strip())
                 users.set_blocked(user_id, target, command == "/ban")
                 await message.answer("已禁用用户并请求取消其未完成任务" if command == "/ban" else "已解除禁用，取消的任务不会自动恢复")
-            elif command == "/library":
-                await message.answer(settings.komga_public_url or "尚未配置访问地址")
             elif command == "/disk":
                 users.require_admin(user_id)
                 free = shutil.disk_usage(settings.storage_root).free / 1024**3
                 policy = f"暂停阈值 {settings.min_free_space_gb} GiB" if settings.disk_space_check_enabled else "磁盘空间阈值检查已关闭"
                 await message.answer(f"剩余 {free:.1f} GiB；{policy}")
-            elif command == "/queue":
-                page = max(0, int(argument or "1") - 1)
-                tasks = service.store.tasks(user_id, page)
-                await message.answer(("\n\n".join(describe(t) for t in tasks) or "暂无任务")[:4000])
-            elif command == "/status":
-                if argument.strip():
-                    await message.answer(describe(service.get(argument.strip(), user_id)))
-                else:
-                    await message.answer(await diagnostics.status(user_id))
             elif command == "/web":
                 users.require_admin(user_id)
                 if web_auth is None:
@@ -207,16 +203,32 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
                 content = diagnostics.recent_logs(user_id)
                 await message.answer_document(BufferedInputFile(content.encode("utf-8"), filename="komga-plus-recent-100.log"),
                                               caption="📜 本次启动以来最近最多 100 条应用日志（已脱敏）", protect_content=False)
-            elif command == "/cancel":
-                service.store.request_cancel(argument.strip(), user_id)
-                await message.answer("已请求取消；停止后会通知，已发布文件保留")
-            elif command == "/retry":
-                task = service.retry(argument.strip(), user_id, message.chat.id)
-                if task["chat_id"] != message.chat.id:
-                    await message.answer("该作品已在其他聊天中下载，请在原聊天查看进度")
-                    return
-                sent = await message.answer(describe(task))
-                service.store.update(task["id"], message_id=sent.message_id)
+            elif command in {"/like", "/report"}:
+                if not argument.strip():
+                    raise ValueError(f"用法：{command} 漫画ID")
+                result = (community.like if command == "/like" else community.report)(user_id, argument.strip())
+                if command == "/like":
+                    label = "点赞成功" if result['added'] else "你已点过赞，无需重复点赞"
+                    await message.answer(f"👍 {label}\n{result['title'][:250]}\n漫画 ID：{result['source_id']}\n共 {result['likes']} 赞")
+                else:
+                    await message.answer("✅ 举报已记录，将通知管理员审核。" if result['added'] else "该漫画你已举报过，请等待管理员审核。")
+            elif command in {"/random", "/rank"}:
+                if argument.strip():
+                    raise ValueError(f"用法：{command}（无需参数）")
+                if command == "/random":
+                    item = community.random(user_id)
+                    lines = ([f"🎲 随机推荐：{item['title'][:180]}", f"漫画 ID：{item['source_id']} · {item['likes']} 赞"]
+                             if item else ["漫画库暂无可推荐的漫画"])
+                else:
+                    items = community.rank(user_id)
+                    lines = ["🏆 漫画人气前十（本站用户点赞）"] + [
+                        f"{i}. {item['title'][:80]}\nID：{item['source_id']} · {item['likes']} 赞"
+                        for i, item in enumerate(items, 1)]
+                    if not items:
+                        lines.append("暂无点赞记录，使用 /like ID 为喜欢的漫画点赞")
+                if settings.komga_public_url:
+                    lines.append("阅读地址：" + settings.komga_public_url)
+                await message.answer("\n\n".join(lines))
             elif command == "/schedules" or command.startswith("/schedule_") or text == "⏰ 定时下载":
                 await message.answer("自动下载功能已移除。请发送漫画 ID 或链接，确认后手动下载。", reply_markup=menu(user_id))
             elif command.startswith("/") and command != "/jm":
@@ -226,7 +238,12 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
                     await message.answer("用法：/jm 漫画ID或链接；群聊中也可使用 /jm@机器人用户名 漫画ID")
                     return
                 pending = await message.answer("⏳ 正在获取作品信息，请稍候……")
-                manga, token = await service.preview(argument if command == "/jm" else text, user_id, message.chat.id)
+                if command == "/jm":
+                    task = await service.download(argument, user_id, message.chat.id)
+                    service.store.update(task['id'], message_id=pending.message_id)
+                    await pending.edit_text(describe(task))
+                    return
+                manga, token = await service.preview(text, user_id, message.chat.id)
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="确认下载", callback_data=f"confirm:{token}"),
                     InlineKeyboardButton(text="取消", callback_data=f"dismiss:{token}"),
@@ -276,6 +293,7 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
 
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
+    dispatcher.startup.register(configure_commands)
     return dispatcher
 
 
@@ -319,10 +337,12 @@ async def deliver_notifications(bot: Bot, store, public_url, storage_root=None):
             store.defer_notification(notice["id"], min(3600, 2 ** min(notice["attempts"] + 1, 11)))
 
 
-async def notifications(bot, store, public_url, storage_root=None):
+async def notifications(bot, store, public_url, storage_root=None, community=None):
     last_text = {}
     while True:
         await deliver_notifications(bot, store, public_url, storage_root)
+        if community is not None:
+            await deliver_reports(bot, community)
         for task in store.tasks(active=True):
             if not task["message_id"]:
                 continue

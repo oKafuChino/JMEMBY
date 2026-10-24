@@ -2,10 +2,10 @@
 import json
 from datetime import datetime, timezone
 
-MENU = {"🏠 首页": "/start", "📝 注册": "/register", "👤 我的账号": "/me",
-        "📚 阅读入口": "/library", "📋 我的任务": "/queue", "🔑 阅读账号": "/account",
+MENU = {"🏠 首页": "/start", "📝 注册": "/register", "👤 我的账号": "/my",
+        "🎲 随机推荐": "/random", "🏆 人气排行": "/rank", "🔑 阅读账号": "/account",
         "⚙️ 管理面板": "/admin", "👥 用户列表": "/users",
-        "🩺 服务状态": "/status", "📜 最近日志": "/logs"}
+        "🌐 网页管理": "/web", "📜 最近日志": "/logs"}
 STATUS = {"QUEUED": "⏳ 排队中", "DOWNLOADING": "📥 下载中", "PACKAGING": "📦 整理中",
           "IMPORT_PENDING": "📚 正在入库", "COMPLETED": "✅ 已完成", "FAILED": "❌ 失败",
           "RETRY_WAIT": "🔄 等待重试", "PAUSED_DISK": "⏸ 空间不足",
@@ -14,6 +14,16 @@ STATUS = {"QUEUED": "⏳ 排队中", "DOWNLOADING": "📥 下载中", "PACKAGING
 
 def normalize(text):
     return MENU.get(text.strip(), text.strip())
+
+
+def profile_text(user_id, status, reading, public_url, is_admin=False):
+    ready = bool(reading and reading['status'] == 'READY')
+    email = reading['email'] if ready else '尚未开通，请使用 /account 领取或重试'
+    if is_admin and not ready:
+        email = '请使用已有 Komga 管理账号'
+    return (f"👤 我的账号\n\n用户 ID：{user_id}\nBot 状态：{status}\n"
+            f"阅读账号：{email}\n服务器地址：{public_url or '尚未配置，请联系管理员'}\n\n"
+            "初始密码只在 /account 首次交付时展示；忘记密码请联系管理员重置。")
 
 
 def describe(task):

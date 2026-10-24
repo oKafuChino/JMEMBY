@@ -43,6 +43,8 @@ async def run(settings, db_path, recent_logs):
     service.download_coordinator = coordinator
     from jmemby.services.library import LibraryService
     service.library = LibraryService(store, users, settings.storage_root, komga, coordinator)
+    from jmemby.services.community import CommunityService
+    community = CommunityService(store, users)
     from jmemby.web.auth import AdminAuth
     web_auth = AdminAuth(users) if settings.web_enabled else None
     dispatcher = create_dispatcher(service, settings, accounts, diagnostics, web_auth)
@@ -55,7 +57,7 @@ async def run(settings, db_path, recent_logs):
             await asyncio.sleep(5)
 
     jobs = [asyncio.create_task(worker.run()),
-            asyncio.create_task(notifications(bot, store, settings.komga_public_url, settings.storage_root)),
+            asyncio.create_task(notifications(bot, store, settings.komga_public_url, settings.storage_root, community)),
             asyncio.create_task(health()), asyncio.create_task(dispatcher.start_polling(bot))]
     try:
         from jmemby.distributed.server import serve as serve_agents

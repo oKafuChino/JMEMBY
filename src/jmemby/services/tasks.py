@@ -19,6 +19,15 @@ class TaskService:
         self.authorize(user_id)  # Account may have been blocked during the network request.
         return manga, self.store.confirmation(manga, user_id, chat_id)
 
+    async def download(self, reference, user_id, chat_id):
+        """Submit /jm immediately; recheck membership and duplicates after I/O."""
+        self.authorize(user_id)
+        source_id = parse_reference(reference, self.domains)
+        self.store.check_submission(getattr(self.provider, 'source', 'jmcomic'), source_id, user_id)
+        manga = await self.provider.get_manga(source_id)
+        self.authorize(user_id)
+        return self.store.submit(manga, user_id, chat_id)
+
     def confirm(self, token, user_id, chat_id=None):
         self.authorize(user_id)
         return self.store.confirm(token, user_id, chat_id)

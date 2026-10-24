@@ -23,7 +23,7 @@ location / {
 }
 ```
 
-不使用公网域名时，可设置 `WEB_PUBLIC_URL=http://localhost:8080`，电脑执行 `ssh -N -L 8080:127.0.0.1:8080 user@vps`，浏览器打开 `http://localhost:8080`。浏览器地址必须与 WEB_PUBLIC_URL 完全匹配。非 Docker 启动默认只监听本机，可使用 WEB_HOST/WEB_PORT 配置。面板默认关闭；本版本启动时自动将数据库升级至 schema 11，升级前备份数据库。
+不使用公网域名时，可设置 `WEB_PUBLIC_URL=http://localhost:8080`，电脑执行 `ssh -N -L 8080:127.0.0.1:8080 user@vps`，浏览器打开 `http://localhost:8080`。浏览器地址必须与 WEB_PUBLIC_URL 完全匹配。非 Docker 启动默认只监听本机，可使用 WEB_HOST/WEB_PORT 配置。面板默认关闭；本版本启动时自动将数据库升级至 schema 12，升级前备份数据库。
 
 ## 登录与使用
 
