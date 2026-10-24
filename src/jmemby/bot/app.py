@@ -83,7 +83,7 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
             text += f"\n初始密码：<code>{escape(account['password'])}</code>\n\n请保存密码，登录后在 Komga 修改。密码发送成功后不会在 Bot 中再次展示。"
         else:
             text += "\n\n初始密码已发送。忘记密码请联系管理员在 Komga 重置。"
-        await message.answer(text, parse_mode="HTML", protect_content=True)
+        await message.answer(text, parse_mode="HTML", protect_content=False)
         accounts.delivered(user_id)
         if settings.komga_public_url:
             await message.answer("阅读入口：" + settings.komga_public_url)
@@ -195,7 +195,7 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
                 if web_auth is None:
                     raise ValueError("网页管理面板未启用，请配置 WEB_ENABLED 和 WEB_PUBLIC_URL")
                 code = web_auth.issue(user_id)
-                await message.answer(f"管理面板：{settings.web_public_url}\n一次性登录码（5 分钟有效）：\n{code}\n重新获取会使旧登录码失效。", protect_content=True)
+                await message.answer(f"管理面板：{settings.web_public_url}\n一次性登录码（5 分钟有效）：\n{code}\n重新获取会使旧登录码失效。", protect_content=False)
             elif command == "/who":
                 users.require_admin(user_id)
                 parts = argument.split()
@@ -206,7 +206,7 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
             elif command == "/logs":
                 content = diagnostics.recent_logs(user_id)
                 await message.answer_document(BufferedInputFile(content.encode("utf-8"), filename="jmemby-recent-100.log"),
-                                              caption="📜 本次启动以来最近最多 100 条应用日志（已脱敏）", protect_content=True)
+                                              caption="📜 本次启动以来最近最多 100 条应用日志（已脱敏）", protect_content=False)
             elif command == "/cancel":
                 service.store.request_cancel(argument.strip(), user_id)
                 await message.answer("已请求取消；停止后会通知，已发布文件保留")
