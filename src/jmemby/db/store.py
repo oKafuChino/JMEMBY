@@ -187,7 +187,22 @@ class Store:
             self.update(task_id, status=status, error_code=code, error=error)
             db.execute("INSERT OR IGNORE INTO notifications(task_id,event) VALUES (?,?)", (task_id, status))
 
+    def reject_duplicate(self, source, source_id):
+        record = self.connection.execute(
+            "SELECT id FROM manga WHERE source=? AND source_id=?", (source, source_id)).fetchone()
+        if not record:
+            return
+        if self.connection.execute(
+                "SELECT 1 FROM tasks WHERE manga_id=? AND status='COMPLETED' LIMIT 1",
+                (record["id"],)).fetchone():
+            raise ValueError("该漫画已下载完成，拒绝重复下载，请前往漫画库阅读")
+        if self.connection.execute(
+                "SELECT 1 FROM tasks WHERE manga_id=? AND status NOT IN ('COMPLETED','FAILED','CANCELLED') LIMIT 1",
+                (record["id"],)).fetchone():
+            raise ValueError("该漫画已有进行中的任务，拒绝重复下载")
+
     def confirmation(self, manga, user_id, chat_id):
+        self.reject_duplicate(manga.source, manga.source_id)
         token = secrets.token_urlsafe(12)
         self.connection.execute("INSERT INTO confirmations(token,user_id,chat_id,snapshot,expires) VALUES (?,?,?,?,?)",
                                 (token, user_id, chat_id, json.dumps(asdict(manga)), time.time() + 600))
@@ -228,17 +243,14 @@ class Store:
     def _submit(self, db, manga, user_id, chat_id, retry_of=None):
         if not manga.chapters or len({c.source_id for c in manga.chapters}) != len(manga.chapters):
             raise ValueError("章节清单为空或重复")
+        # Called under BEGIN IMMEDIATE: another submission cannot pass this
+        # check and enqueue the same work between the check and INSERT.
+        self.reject_duplicate(manga.source, manga.source_id)
         raw = json.dumps(asdict(manga), ensure_ascii=False)
         directory = library_directory(Path(), manga).as_posix()
         db.execute("INSERT OR IGNORE INTO manga(source,source_id,title,directory,metadata) VALUES (?,?,?,?,?)",
                    (manga.source, manga.source_id, manga.title, directory, raw))
         record = db.execute("SELECT * FROM manga WHERE source=? AND source_id=?", (manga.source, manga.source_id)).fetchone()
-        active = db.execute("SELECT * FROM tasks WHERE manga_id=? AND status NOT IN ('COMPLETED','FAILED','CANCELLED')",
-                            (record["id"],)).fetchone()
-        if active:
-            if active["user_id"] != user_id:
-                raise ValueError("该漫画已有其他用户的下载任务，请稍后再试")
-            return dict(active)
         task_id, now = uuid.uuid4().hex, time.time()
         db.execute("INSERT INTO tasks(id,manga_id,snapshot,user_id,chat_id,retry_of,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
                    (task_id, record["id"], raw, user_id, chat_id, retry_of, now, now))

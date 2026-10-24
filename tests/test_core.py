@@ -174,7 +174,8 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_end_to_end_generated_images_and_duplicate_submission(self):
         task = self.submit()
-        self.assertEqual(task["id"], self.submit()["id"])
+        with self.assertRaisesRegex(ValueError, "拒绝重复下载"):
+            self.submit()
         await self.worker.run_once()
         self.assertEqual(self.store.get(task["id"])["status"], "COMPLETED")
         record = self.store.chapters(task["id"])[0]
@@ -182,11 +183,12 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         with zipfile.ZipFile(path) as archive:
             self.assertEqual(archive.namelist()[:2], ["000001.png", "000002.png"])
             self.assertIn("A &amp; &lt;B&gt;", archive.read("ComicInfo.xml").decode())
-        second = self.submit()
-        await self.worker.run_once()
+        with self.assertRaisesRegex(ValueError, "已下载完成"):
+            self.submit()
+        self.assertFalse(await self.worker.run_once())
         self.assertEqual(self.provider.downloads, 2)
-        self.assertEqual(self.store.get(second["id"])["status"], "COMPLETED")
-        self.assertEqual(len(self.store.notifications()), 2)
+        self.assertEqual(len(self.store.tasks()), 1)
+        self.assertEqual(len(self.store.notifications()), 1)
 
     async def test_import_failure_reuses_artifact(self):
         task = self.submit()
@@ -264,7 +266,7 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
             self.store.confirm(token, 2)
         first = self.store.confirm(token, 1)
         self.assertEqual(first["id"], self.store.confirm(token, 1)["id"])
-        other = self.store.confirmation(manga(), 1, 1)
+        other = self.store.confirmation(replace(manga(), source_id="43"), 1, 1)
         self.store.connection.execute("UPDATE confirmations SET expires=0 WHERE token=?", (other,))
         with self.assertRaises(ValueError):
             self.store.confirm(other, 1)
@@ -283,7 +285,9 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         first = self.submit()
         second = Store(self.root / "app.db")
         try:
-            self.assertEqual(second.submit(manga(), 1, 1)["id"], first["id"])
+            with self.assertRaisesRegex(ValueError, "拒绝重复下载"):
+                second.submit(manga(), 1, 1)
+            self.assertEqual(second.tasks()[0]["id"], first["id"])
         finally:
             second.close()
 

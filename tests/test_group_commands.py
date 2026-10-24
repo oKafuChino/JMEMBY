@@ -86,7 +86,9 @@ class ConfirmationTests(unittest.TestCase):
     def test_cross_chat_duplicate_keeps_original_destination(self):
         first = self.store.submit(manga(), 1, 1)
         self.store.update(first["id"], message_id=99)
-        duplicate = self.service.confirm(self.token, 1, -100)
+        with self.assertRaisesRegex(ValueError, "拒绝重复下载"):
+            self.service.confirm(self.token, 1, -100)
+        duplicate = self.store.get(first["id"])
         self.assertEqual((duplicate["id"], duplicate["chat_id"], duplicate["message_id"]), (first["id"], 1, 99))
         self.assertEqual(len(self.store.tasks()), 1)
 
@@ -165,7 +167,7 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_jm_preview_confirmation_and_notification_in_both_group_types(self):
         for kind in ("group", "supergroup"):
-            await self.send("/jm 42", kind=kind)
+            await self.send(f"/jm {self.provider.get_manga.return_value.source_id}", kind=kind)
             await self.click("confirm", self.token())
             task = self.store.tasks()[0]
             self.assertEqual((task["user_id"], task["chat_id"], task["message_id"]), (2, -100, 99))
@@ -174,6 +176,7 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
             await deliver_notifications(bot, self.store, "")
             self.assertEqual(bot.edit_message_text.call_args.kwargs["chat_id"], -100)
             self.assertEqual(bot.edit_message_text.call_args.kwargs["message_id"], 99)
+            self.provider.get_manga.return_value = Manga("jmcomic", "43", "Next", (), (Chapter("53", 1, "Chapter", ()),))
 
     async def test_other_group_messages_are_silently_ignored_even_for_admin(self):
         for text in ("/download 42", "/register", "/help", "/start", "/admin", "/account", "/logs", "/queue", "/retry x", "/cancel x", "/schedule_add", "🔑 阅读账号", "42", "https://example.com/album/42"):
@@ -232,12 +235,13 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cross_chat_duplicate_does_not_overwrite_message_even_with_same_id(self):
         for message_id in (None, 99):
+            await self.send("/jm 42")
+            token = self.token()
             first = self.store.submit(manga(), 2, 2)
             self.store.update(first["id"], message_id=message_id)
-            await self.send("/jm 42")
             self.edit.reset_mock()
-            await self.click("confirm", self.token())
-            self.assertIn("其他聊天", self.alert.call_args.args[0])
+            await self.click("confirm", token)
+            self.assertIn("拒绝重复下载", self.alert.call_args.args[0])
             task = self.store.get(first["id"])
             self.assertEqual((task["chat_id"], task["message_id"]), (2, message_id))
             self.edit.assert_not_awaited()

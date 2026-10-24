@@ -14,6 +14,7 @@ class TaskService:
     async def preview(self, reference, user_id, chat_id):
         self.authorize(user_id)
         source_id = parse_reference(reference, self.domains)
+        self.store.reject_duplicate(getattr(self.provider, "source", "jmcomic"), source_id)
         manga = await self.provider.get_manga(source_id)
         self.authorize(user_id)  # Account may have been blocked during the network request.
         return manga, self.store.confirmation(manga, user_id, chat_id)
