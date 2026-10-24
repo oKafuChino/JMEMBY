@@ -34,9 +34,22 @@ class LibraryService:
             "SELECT m.id,m.source,m.source_id,m.title,COUNT(c.id) AS chapters,"
             "SUM(CASE WHEN c.status IN ('PUBLISHED','IMPORTED') THEN 1 ELSE 0 END) AS saved_chapters,"
             "COALESCE(SUM(c.size),0) AS size,"
+            "(SELECT COUNT(*) FROM manga_likes l WHERE l.manga_id=m.id) AS likes,"
+            "origin.user_id AS source_user_id,u.username AS source_username,"
+            "u.display_name AS source_display_name,"
             "EXISTS(SELECT 1 FROM tasks t WHERE t.manga_id=m.id AND "
             "t.status NOT IN ('COMPLETED','FAILED','CANCELLED')) AS busy "
-            'FROM manga m LEFT JOIN chapters c ON c.manga_id=m.id' + where +
+            'FROM manga m LEFT JOIN chapters c ON c.manga_id=m.id '
+            # Prefer the successful downloader in this library lifecycle. Old
+            # completions before removal must not own a later user's re-download.
+            'LEFT JOIN tasks origin ON origin.id=COALESCE('
+            "(SELECT t.id FROM tasks t WHERE t.manga_id=m.id AND t.status='COMPLETED' "
+            'AND (m.removed_at IS NULL OR t.created_at>m.removed_at) '
+            'ORDER BY t.updated_at,t.rowid LIMIT 1),'
+            '(SELECT t.id FROM tasks t WHERE t.manga_id=m.id '
+            'AND (m.removed_at IS NULL OR t.created_at>m.removed_at) '
+            'ORDER BY t.created_at DESC,t.rowid DESC LIMIT 1)) '
+            'LEFT JOIN users u ON u.user_id=origin.user_id' + where +
             ' GROUP BY m.id ORDER BY m.id DESC LIMIT 20 OFFSET ?', (*params, (page-1)*20)).fetchall()
         return {'manga': [dict(row) for row in rows], 'total': total, 'page': page, 'limit': 20}
 

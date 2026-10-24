@@ -166,6 +166,49 @@ class LibraryTests(unittest.IsolatedAsyncioTestCase):
                      lambda:self.library.remove_files(1,True),lambda:self.library.remove_files(1,999)):
             with self.assertRaises(ValueError):call()
 
+    def test_likes_do_not_multiply_chapter_totals_and_source_uses_profile(self):
+        _, task, target = self.book()
+        db = self.store.connection
+        db.execute("UPDATE users SET username='reader',display_name='Reader' WHERE user_id=2")
+        db.execute("INSERT INTO chapters(manga_id,source_id,ordinal,title,path,status,size) "
+                   "VALUES (?,?,?,?,?,'IMPORTED',23)",
+                   (task['manga_id'], 'second', 2, 'Second', 'second.cbz'))
+        db.executemany('INSERT INTO manga_likes(manga_id,user_id,created_at) VALUES (?,?,0)',
+                       [(task['manga_id'], 2), (task['manga_id'], 3)])
+        row = self.library.list(1)['manga'][0]
+        self.assertEqual((row['likes'], row['chapters'], row['saved_chapters']), (2, 2, 2))
+        self.assertEqual(row['size'], target.stat().st_size + 23)
+        self.assertEqual((row['source_user_id'], row['source_username'], row['source_display_name']),
+                         (2, 'reader', 'Reader'))
+
+    def test_source_tracks_retry_and_new_download_after_removal(self):
+        manga, first, _ = self.book(complete=False)
+        self.store.finish(first['id'], 'FAILED')
+        # An administrator can download without a matching users table row.
+        task = self.store.submit(manga, 1, 1)
+        row = self.library.list(1)['manga'][0]
+        self.assertEqual(row['likes'], 0)
+        self.assertEqual(row['source_user_id'], 1)
+        self.assertIsNone(row['source_display_name'])
+        self.store.finish(task['id'], 'COMPLETED')
+        self.assertEqual(self.library.list(1)['manga'][0]['source_user_id'], 1)
+        self.library.remove_files(1, task['manga_id'])
+        task = self.store.submit(manga, 2, 2)
+        self.assertEqual(self.library.list(1)['manga'][0]['source_user_id'], 2)
+        self.store.finish(task['id'], 'COMPLETED')
+        self.assertEqual(self.library.list(1)['manga'][0]['source_user_id'], 2)
+
+    def test_legacy_manga_without_tasks_has_unknown_source_and_zero_likes(self):
+        self.book()
+        self.store.connection.execute(
+            "INSERT INTO manga(source,source_id,title,directory,metadata) "
+            "SELECT source,'legacy','Legacy',directory,metadata FROM manga LIMIT 1")
+        row = self.library.list(1, query='legacy')['manga'][0]
+        self.assertEqual((row['likes'], row['chapters'], row['size']), (0, 0, 0))
+        self.assertIsNone(row['source_user_id'])
+        self.assertIsNone(row['source_username'])
+        self.assertIsNone(row['source_display_name'])
+
     def test_schema_ten_migration_and_removal_survive_restart(self):
         manga, task, _ = self.book()
         self.store.connection.executescript('DROP TABLE channel_deliveries; DROP INDEX task_created_order; ALTER TABLE tasks DROP COLUMN assigned_node_id; ALTER TABLE tasks DROP COLUMN assigned_node_label; ALTER TABLE tasks DROP COLUMN notify_telegram; DROP TABLE report_deliveries; DROP TABLE manga_reports; DROP TABLE manga_likes; ALTER TABLE manga DROP COLUMN removed_at; PRAGMA user_version=10;')

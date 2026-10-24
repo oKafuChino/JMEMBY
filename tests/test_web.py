@@ -243,7 +243,10 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await client.post('/api/library/remove',json=data,headers=headers)).status,403)
                 headers['X-CSRF-Token']=auth.authenticate(token)['csrf']
                 response=await client.get('/api/library',params={'q':'Library'},headers=headers)
-                self.assertEqual((await response.json())['total'],1)
+                result=await response.json()
+                self.assertEqual(result['total'],1)
+                self.assertEqual(result['manga'][0]['likes'],0)
+                self.assertEqual(result['manga'][0]['source_user_id'],2)
                 self.assertEqual((await client.get('/api/library?q=absent',headers=headers)).status,200)
                 self.assertEqual((await client.get('/api/library?page=0',headers=headers)).status,400)
                 self.assertEqual((await client.post('/api/library/remove',json=data,headers=headers)).status,400)
