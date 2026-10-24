@@ -12,3 +12,13 @@ jobs:
       - run: python -m pytest -q
       - run: ruff check --select E9,F63,F7,F82 src tests
       - run: python -m compileall -q src
+  agent-platforms:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:12-slim', 'ubuntu:24.04', 'alpine:3.20']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check native Agent dependencies and packaged imports
+        run: docker run --rm -v "$PWD:/workspace:ro" '${{ matrix.image }}' sh /workspace/scripts/check-agent-platform.sh

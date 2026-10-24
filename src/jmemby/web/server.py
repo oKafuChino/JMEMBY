@@ -109,7 +109,7 @@ def create_app(service, auth, settings):
     async def node_action(request):
         coordinator = getattr(service, 'download_coordinator', None)
         if not coordinator or not coordinator.registry:
-            raise ValueError('请先启用 DISTRIBUTED_ENABLED，并部署 Agent API 的 HTTPS 入口')
+            raise ValueError('节点调度服务不可用，请检查主控启动日志')
         data = await request.json()
         if not isinstance(data, dict):
             raise ValueError('请求必须是 JSON 对象')

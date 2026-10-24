@@ -18,7 +18,6 @@ from jmemby.services.tasks import TaskService
 from jmemby.services.users import UserService
 from jmemby.services.accounts import AccountService
 from jmemby.services.diagnostics import Diagnostics, RecentLogs
-from jmemby.workers.queue import Worker
 from jmemby.distributed.config import MasterSettings
 
 
@@ -28,21 +27,15 @@ async def run(settings, db_path, recent_logs):
     provider_type = CommandProvider if os.getenv("PROVIDER_COMMAND") else JmProvider
     provider = provider_type(settings.provider_command, settings.operation_timeout)
     distributed = MasterSettings.from_env()
-    coordinator = None
-    if distributed.enabled:
-        from jmemby.distributed.coordinator import Coordinator
-        coordinator = Coordinator(distributed)
+    from jmemby.distributed.coordinator import Coordinator
+    coordinator = Coordinator(distributed)
     komga = KomgaBridge(komga_command(), settings.operation_timeout)
     store = Store(db_path)
-    if coordinator:
-        from jmemby.distributed.nodes import NodeRegistry
-        coordinator.registry = NodeRegistry(store, distributed.tokens)
+    from jmemby.distributed.nodes import NodeRegistry
+    coordinator.registry = NodeRegistry(store, distributed.tokens)
     bot = Bot(settings.telegram_bot_token)
-    if coordinator:
-        from jmemby.distributed.workers import WorkerPool
-        worker = WorkerPool(store, provider, komga, settings, coordinator)
-    else:
-        worker = Worker(store, provider, komga, settings)
+    from jmemby.distributed.workers import WorkerPool
+    worker = WorkerPool(store, provider, komga, settings, coordinator)
     users = UserService(store, settings.allowed_user_ids)
     accounts = AccountService(users, komga, db_path.parent / "account.key")
     diagnostics = Diagnostics(users, worker, komga, recent_logs)
@@ -63,9 +56,8 @@ async def run(settings, db_path, recent_logs):
             asyncio.create_task(notifications(bot, store, settings.komga_public_url, settings.storage_root)),
             asyncio.create_task(health()), asyncio.create_task(dispatcher.start_polling(bot))]
     try:
-        if coordinator is not None:
-            from jmemby.distributed.server import serve as serve_agents
-            jobs.append(asyncio.create_task(serve_agents(coordinator)))
+        from jmemby.distributed.server import serve as serve_agents
+        jobs.append(asyncio.create_task(serve_agents(coordinator)))
         if settings.web_enabled:
             from jmemby.web.server import serve
             jobs.append(asyncio.create_task(serve(service, web_auth, settings)))
@@ -110,7 +102,7 @@ def main():
     try:
         settings = Settings.from_env()
         distributed = MasterSettings.from_env()
-        if distributed.enabled and settings.web_enabled and distributed.port == settings.web_port:
+        if settings.web_enabled and distributed.port == settings.web_port:
             raise ValueError("DISTRIBUTED_PORT must differ from WEB_PORT")
         if args.command == "check-source":
             from jmemby.providers.reference import parse_reference

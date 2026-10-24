@@ -147,36 +147,73 @@ class InstallerTests(unittest.TestCase):
         payload, checksum = agent_bundle()
         self.assertEqual(hashlib.sha256(payload).hexdigest(),checksum)
         with tarfile.open(fileobj=io.BytesIO(payload), mode='r:gz') as archive:
-            self.assertEqual(set(archive.getnames()), {'Dockerfile'} | {'src/jmemby/'+f for f in AGENT_FILES})
+            self.assertEqual(set(archive.getnames()), {'requirements-agent.txt'} | {'src/jmemby/'+f for f in AGENT_FILES})
             for entry in archive:
                 self.assertTrue(entry.isfile())
                 self.assertEqual(entry.mtime,0)
-            dockerfile=archive.extractfile('Dockerfile').read().decode()
-            self.assertIn('COPY --chown=agent:agent',dockerfile)
+            requirements=archive.extractfile('requirements-agent.txt').read().decode()
+            self.assertIn('aiohttp',requirements)
+            self.assertNotIn('aiogram',requirements)
 
-    def test_installer_extracts_versioned_source_and_four_line_environment(self):
-        # Exercise the embedded Python with a local fake enrollment, never install Docker.
-        script = INSTALL_SCRIPT.split("<<'PY'\n",1)[1].split('\nPY\n',1)[0]
-        compile(script, '<installer-python>', 'exec')
+    def test_native_install_stages_config_and_source_before_activation(self):
+        from jmemby.distributed.native_install import prepare, configure, service_name
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); temporary=root/'tmp'; temporary.mkdir(); target=root/'install';target.mkdir()
             payload, checksum=agent_bundle()
             (temporary/'agent.tar.gz').write_bytes(payload)
-            config={'AGENT_ID':'vps-1','AGENT_MASTER_URL':'https://agents.example.com','AGENT_TOKEN':'a'*43,'AGENT_CONCURRENCY':2}
+            release=prepare(temporary,target)
+            self.assertEqual(release,target/'releases'/checksum)
+            self.assertTrue((release/'src/jmemby/distributed/agent.py').is_file())
+            config={'AGENT_ID':'vps-1','AGENT_MASTER_URL':'https://agents.example.com','AGENT_TOKEN':'a'*43,'AGENT_CONCURRENCY':1}
             (temporary/'enrollment.json').write_text(json.dumps({'config':config,'bundle_sha256':checksum}))
-            run=subprocess.run([sys.executable,'-c',script,str(temporary),str(target),'vps-1'],capture_output=True,text=True)
-            self.assertEqual(run.returncode,0,run.stderr)
-            env=(target/'.env.agent').read_text().splitlines()
-            self.assertEqual(len(env),4)
-            self.assertEqual(dict(x.split('=',1) for x in env),{k:str(v) for k,v in config.items()})
-            compose=json.loads((target/'compose.json').read_text())
-            self.assertEqual(compose['services']['agent']['build']['context'],'./releases/'+checksum)
-            self.assertNotIn('ports',compose['services']['agent'])
-            self.assertTrue((target/'releases'/checksum/'src/jmemby/distributed/agent.py').is_file())
+            name=configure(temporary,target,'vps-1')
+            self.assertEqual(name,service_name('vps-1'))
+            env=dict(x.split('=',1) for x in (target/'.env.agent.new').read_text().splitlines())
+            self.assertTrue(all(env[k]==str(v) for k,v in config.items()))
+            self.assertEqual(env['AGENT_WORK_DIR'],'/var/lib/komga-plus-agent/'+name)
+            self.assertFalse((target/'.env.agent').exists())
+            self.assertFalse((target/'current').exists())
+            self.assertFalse((target/'compose.json').exists())
+            unit=(target/'agent.service').read_text()
+            self.assertIn('User='+name,unit)
+            self.assertIn('ProtectSystem=strict',unit)
+            rc=(target/'agent.openrc').read_text()
+            self.assertIn('supervisor="supervise-daemon"',rc)
+            self.assertIn('command_user="'+name+':'+name+'"',rc)
+            self.assertNotIn('AGENT_TOKEN',unit+rc)
             (temporary/'agent.tar.gz').write_bytes(b'bad')
-            run=subprocess.run([sys.executable,'-c',script,str(temporary),str(target),'vps-1'],capture_output=True)
-            self.assertNotEqual(run.returncode,0)
-            self.assertEqual((target/'.env.agent').read_text().splitlines(),env)
+            with self.assertRaises(ValueError): configure(temporary,target,'vps-1')
+
+    def test_native_unpack_rejects_traversal_links_duplicates_and_missing_files(self):
+        from jmemby.distributed.native_install import prepare
+        for names in (['../outside'],['/outside'],['src/jmemby/../../outside.py'],
+                      ['src/jmemby/x.py','src/jmemby/x.py'],['src/jmemby/x.py'],['link']):
+            with self.subTest(names=names),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);output=io.BytesIO()
+                with tarfile.open(fileobj=output,mode='w:gz') as tar:
+                    for name in names:
+                        item=tarfile.TarInfo(name)
+                        if name=='link':item.type=tarfile.SYMTYPE;item.linkname='/outside'
+                        tar.addfile(item,io.BytesIO())
+                (root/'agent.tar.gz').write_bytes(output.getvalue())
+                with self.assertRaises(ValueError):prepare(root,root/'install')
+
+    def test_installer_uses_posix_shell_and_checks_dependencies_before_enrollment(self):
+        from jmemby.distributed.installer import install_command
+        command=install_command('https://agents.example.com','vps-1','a'*43)
+        self.assertEqual(shlex.split(command)[0],'sh')
+        self.assertNotIn('bash',command)
+        self.assertIn('apk add --no-cache',command)
+        self.assertIn('debian|ubuntu)',INSTALL_SCRIPT)
+        self.assertIn('kpa_init=openrc',INSTALL_SCRIPT)
+        self.assertNotIn('apt-get install -y docker',INSTALL_SCRIPT)
+        self.assertNotIn('compose up',INSTALL_SCRIPT)
+        self.assertLess(INSTALL_SCRIPT.index('-m pip install'),INSTALL_SCRIPT.index('/install/enroll/'))
+        self.assertLess(INSTALL_SCRIPT.index("import aiohttp, PIL, jmcomic"),INSTALL_SCRIPT.index('/install/enroll/'))
+        self.assertIn('systemctl enable',INSTALL_SCRIPT)
+        self.assertIn('rc-update add',INSTALL_SCRIPT)
+        embedded=INSTALL_SCRIPT.split("<<'KPA_PY'\n",1)[1].split('\nKPA_PY\n',1)[0]
+        compile(embedded,'native-installer','exec')
 
 
 class NodeCoordinatorTests(unittest.IsolatedAsyncioTestCase):

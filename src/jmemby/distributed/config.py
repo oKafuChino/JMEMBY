@@ -18,7 +18,7 @@ def valid_token(value):
 
 @dataclass(frozen=True)
 class MasterSettings:
-    enabled: bool = False
+    enabled: bool = True
     tokens: dict = field(default_factory=dict, repr=False)
     host: str = "127.0.0.1"
     port: int = 8081
@@ -27,8 +27,7 @@ class MasterSettings:
 
     @classmethod
     def from_env(cls):
-        if os.getenv("DISTRIBUTED_ENABLED", "false").lower() not in {"true", "1", "yes"}:
-            return cls()
+        # Remote execution is mandatory. Ignore legacy false values on upgrades.
         try:
             tokens = json.loads(os.getenv("DOWNLOAD_AGENT_TOKENS", "{}"))
         except ValueError:
@@ -51,7 +50,7 @@ class AgentSettings:
     master_url: str
     agent_id: str
     token: str = field(repr=False)
-    concurrency: int = 2
+    concurrency: int = 1
     work_dir: str = "/agent-data"
     operation_timeout: int = 300
     max_page_bytes: int = 30 * 1024 * 1024
@@ -70,7 +69,7 @@ class AgentSettings:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,48}", agent_id) or not valid_token(token):
             raise ValueError("Configure AGENT_ID and a random AGENT_TOKEN of at least 32 characters")
         return cls(origin, agent_id, token,
-                   integer("AGENT_CONCURRENCY", 2, 1, 16), os.getenv("AGENT_WORK_DIR", "/agent-data"),
+                   integer("AGENT_CONCURRENCY", 1, 1, 16), os.getenv("AGENT_WORK_DIR", "/agent-data"),
                    integer("AGENT_OPERATION_TIMEOUT", 300, 10, 3600),
                    integer("AGENT_MAX_PAGE_BYTES", 30 * 1024 * 1024, 1024, 256 * 1024 * 1024),
                    integer("AGENT_MAX_PIXELS", 50_000_000, 1, 100_000_000),

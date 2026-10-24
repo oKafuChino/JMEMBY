@@ -1,9 +1,2 @@
-# Add to the existing controller deployment, keeping its original project name.
-# docker compose -f compose.yaml -f compose.distributed.yaml up -d --build app
-services:
-  app:
-    environment:
-      DISTRIBUTED_HOST: 0.0.0.0
-      DISTRIBUTED_PORT: 8081
-    ports:
-      - 127.0.0.1:${DISTRIBUTED_PORT:-8081}:8081
+# Compatibility overlay for old deployment commands. Agent API is now in compose.yaml.
+services: {}

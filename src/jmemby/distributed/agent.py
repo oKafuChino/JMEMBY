@@ -3,10 +3,13 @@ import asyncio
 import hashlib
 import json
 import logging
+from logging.handlers import RotatingFileHandler
+import os
 from pathlib import Path
 import random
 import re
 import secrets
+import signal
 import shutil
 import sys
 import tempfile
@@ -166,7 +169,7 @@ class Agent:
                     await self.process(session, job)
                     logger.info('agent_chapter_finished job=%s', job['id'])
                 else:
-                    await asyncio.sleep(2 + random.random())
+                    await asyncio.sleep(5 + random.random())
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -184,8 +187,40 @@ class Agent:
             await self.poll(session)
 
 
+async def run_service(agent):
+    """Drain provider subprocesses on SIGTERM, including under OpenRC."""
+    loop = asyncio.get_running_loop()
+    stopped = asyncio.Event()
+    installed = []
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, stopped.set)
+            installed.append(sig)
+        except (NotImplementedError, RuntimeError):
+            pass
+    running = asyncio.create_task(agent.run())
+    stopping = asyncio.create_task(stopped.wait())
+    try:
+        done, _ = await asyncio.wait({running, stopping}, return_when=asyncio.FIRST_COMPLETED)
+        if running in done:
+            await running
+    finally:
+        for task in (running, stopping):
+            task.cancel()
+        await asyncio.gather(running, stopping, return_exceptions=True)
+        for sig in installed:
+            loop.remove_signal_handler(sig)
+
+
+def log_handler():
+    path = os.getenv('AGENT_LOG_FILE')
+    if not path:
+        return logging.StreamHandler()
+    return RotatingFileHandler(path, maxBytes=2*1024*1024, backupCount=2, encoding='utf-8')
+
+
 def main():
-    handler = logging.StreamHandler()
+    handler = log_handler()
     handler.setFormatter(JsonFormatter())
     logging.basicConfig(handlers=[handler], level=logging.INFO)
     try:
@@ -195,7 +230,7 @@ def main():
             for path in agent.root.glob('chapter-*'):
                 if path.is_dir() and not path.is_symlink():
                     shutil.rmtree(path)
-            asyncio.run(agent.run())
+            asyncio.run(run_service(agent))
     except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from None
     except KeyboardInterrupt:

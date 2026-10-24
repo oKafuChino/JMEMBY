@@ -9,7 +9,7 @@ COPY src/jmemby/__init__.py ./src/jmemby/__init__.py
 COPY src/jmemby/domain ./src/jmemby/domain
 COPY src/jmemby/providers ./src/jmemby/providers
 COPY src/jmemby/storage ./src/jmemby/storage
-COPY src/jmemby/distributed ./src/jmemby/distributed
+COPY src/jmemby/distributed/__init__.py src/jmemby/distributed/config.py src/jmemby/distributed/agent.py ./src/jmemby/distributed/
 COPY src/jmemby/runtime.py ./src/jmemby/runtime.py
 ENV PYTHONPATH=/app/src PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 RUN mkdir /agent-data && chown agent:agent /agent-data

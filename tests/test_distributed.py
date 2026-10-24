@@ -40,9 +40,11 @@ def manga(number):
 
 
 class ConfigTests(unittest.TestCase):
-    def test_disabled_mode_does_not_require_remote_credentials(self):
-        with patch.dict(os.environ, {}, clear=True):
-            self.assertFalse(MasterSettings.from_env().enabled)
+    def test_remote_mode_is_mandatory_even_for_legacy_false(self):
+        for value in ('', 'false', '0', 'true'):
+            with patch.dict(os.environ, {'DISTRIBUTED_ENABLED':value}, clear=True):
+                self.assertTrue(MasterSettings.from_env().enabled)
+                self.assertEqual(MasterSettings.from_env().tokens,{})
 
     def test_master_tokens_and_limits(self):
         environment = {'DISTRIBUTED_ENABLED': 'true', 'DOWNLOAD_AGENT_TOKENS': json.dumps(TOKENS)}
@@ -54,6 +56,7 @@ class ConfigTests(unittest.TestCase):
                 with patch.dict(os.environ, {'DOWNLOAD_AGENT_TOKENS': invalid}):
                     with self.assertRaises(ValueError):
                         MasterSettings.from_env()
+
             with patch.dict(os.environ, {'DISTRIBUTED_LEASE_SECONDS': '0'}):
                 with self.assertRaises(ValueError):
                     MasterSettings.from_env()
@@ -61,10 +64,15 @@ class ConfigTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     MasterSettings.from_env()
 
+    def test_no_local_fallback_when_legacy_switch_disabled(self):
+        with patch.dict(os.environ, {'DISTRIBUTED_ENABLED':'false', 'PROVIDER_COMMAND':'["custom"]'}, clear=True):
+            with self.assertRaises(ValueError):
+                MasterSettings.from_env()
+
     def test_agent_needs_no_bot_or_komga_credentials(self):
         with patch.dict(os.environ, {'AGENT_MASTER_URL': 'https://master.example',
                                     'AGENT_ID': 'vps-1', 'AGENT_TOKEN': TOKENS['vps-1']}, clear=True):
-            self.assertEqual(AgentSettings.from_env().concurrency, 2)
+            self.assertEqual(AgentSettings.from_env().concurrency, 1)
             for origin in ('http://public.example', 'https://user:pass@example.com', 'https://example.com/path'):
                 with patch.dict(os.environ, {'AGENT_MASTER_URL': origin}):
                     with self.assertRaises(ValueError):
@@ -257,7 +265,7 @@ class PoolTests(unittest.IsolatedAsyncioTestCase):
 
     async def pump(self, name, operation, remote_provider):
         settings = AgentSettings('https://master.example', name, TOKENS[name],
-                                 work_dir=str(self.root / name), min_free_space_mb=0, max_page_bytes=10000)
+                                 concurrency=2, work_dir=str(self.root / name), min_free_space_mb=0, max_page_bytes=10000)
         agent = LocalTransportAgent(settings, self.coordinator, remote_provider)
         seen = []
         while not operation.done():
