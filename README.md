@@ -20,6 +20,10 @@ ComicInfo 的系列名（`Series`）和章节标题（`Title`）也会附带 `[J
 
 项目名称为 **Komga Plus**。仓库地址为 `oKafuChino/Komga-Plus`，新部署的项目目录为 `Komga-Plus`；Python 包名及命令 `jmemby`、数据库文件 `jmemby.db`、阅读账号后缀 `@jmemby.local` 和 CBZ 内部标识 `jmemby.json` 保持兼容。现有部署无需重建账号或迁移数据，请继续使用原项目目录和配置。
 
+## 多 VPS 下载
+
+支持主控配合多台下载 Agent：**每台 VPS 同时下载一本漫画，多台 VPS 并行处理不同漫画**；一本内部可配置图片下载并发。附属机只运行 Agent，通过 HTTPS 主动领取工作并回传图片，主控统一完成去重、双队列调度、用户归属记录、CBZ 打包和 Komga 入库。网页概览可查看节点状态与当前漫画。默认关闭，不需要迁移现有数据。配置及故障恢复说明见 [多 VPS 下载部署](docs/DISTRIBUTED_DOWNLOADS.md)。
+
 ## 一键安装
 
 适用于 Linux VPS。脚本优先复用现有 Docker；缺失时通过 Debian/Ubuntu 的 apt 软件源安装 Docker 和 Compose v2。其他发行版请提前安装 Docker Engine、Compose v2、Python 3。

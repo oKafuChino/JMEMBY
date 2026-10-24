@@ -16,7 +16,7 @@ class CommandProvider:
 
     def child_environment(self):
         return {key: value for key, value in os.environ.items()
-                if not key.startswith(("TELEGRAM_", "KOMGA_"))}
+                if not key.startswith(("TELEGRAM_", "KOMGA_", "AGENT_", "DOWNLOAD_AGENT_", "DISTRIBUTED_"))}
 
     def error_message(self, code):
         return {

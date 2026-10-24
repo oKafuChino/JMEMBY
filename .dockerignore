@@ -1,5 +1,7 @@
 .git
 .env
+.env.agent
+.env.*.tmp
 data
 .venv
 __pycache__

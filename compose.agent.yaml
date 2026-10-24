@@ -1,0 +1,25 @@
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+    env_file: .env.agent
+    environment:
+      AGENT_WORK_DIR: /agent-data
+    volumes:
+      - agent-cache:/agent-data
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    mem_limit: 1g
+    cpus: 2.0
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+volumes:
+  agent-cache:

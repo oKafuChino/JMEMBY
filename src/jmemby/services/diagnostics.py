@@ -67,8 +67,15 @@ class Diagnostics:
             komga = "检查超时"
         except Exception:
             komga = "检查失败，请查看应用日志"
+        coordinator = getattr(self.worker, 'coordinator', None)
+        distributed_text = ''
+        if coordinator:
+            snapshot = coordinator.snapshot()
+            online = sum(a['online'] for a in snapshot['agents'])
+            distributed_text = (f"远程 Agent：{online}/{len(snapshot['agents'])} 在线，"
+                                f"执行中漫画 {sum(a['task'] is not None for a in snapshot['agents'])}\n")
         return (f"🩺 服务状态\n\n运行时长：{int(time.monotonic() - self.started)} 秒\n"
                 f"Worker：{'正常' if age < 30 else '心跳延迟'}（{age:.0f} 秒前）\n"
                 f"数据库：可查询\n磁盘：{disk_text}\nKomga：{komga}\n"
-                f"注册用户：{stats['total']}（禁用 {stats['blocked']}）\n\n"
+                + distributed_text + f"注册用户：{stats['total']}（禁用 {stats['blocked']}）\n\n"
                 "任务统计（全部用户）：\n" + ("\n".join(f"{r[0]}：{r[1]}" for r in rows) or "暂无任务"))

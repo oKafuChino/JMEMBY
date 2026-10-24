@@ -371,10 +371,14 @@ class Store:
     def recover(self):
         self.connection.execute("UPDATE tasks SET status='QUEUED' WHERE status IN ('DOWNLOADING','PACKAGING','IMPORT_PENDING')")
 
-    def next_task(self):
+    def next_task(self, exclude=()):
+        # Active cancellations still belong to the worker that is unwinding.
+        excluded = tuple(exclude)
+        exclusion = ' AND id NOT IN (' + ','.join('?' for _ in excluded) + ')' if excluded else ''
         with self.transaction() as db:
             row = db.execute("SELECT * FROM tasks WHERE status IN ('QUEUED','RETRY_WAIT','CANCEL_REQUESTED') "
-                             "AND (next_at<=? OR cancel_requested=1) ORDER BY priority DESC,queue_sequence LIMIT 1", (time.time(),)).fetchone()
+                             "AND (next_at<=? OR cancel_requested=1)" + exclusion +
+                             " ORDER BY priority DESC,queue_sequence LIMIT 1", (time.time(), *excluded)).fetchone()
             if row:
                 self.update(row["id"], status="DOWNLOADING")
                 return self.get(row["id"])

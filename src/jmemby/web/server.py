@@ -94,6 +94,8 @@ def create_app(service, auth, settings):
 
     async def overview(request):
         stats = users.statistics(request['admin'])
+        coordinator = getattr(service, 'download_coordinator', None)
+        stats['distributed'] = coordinator.snapshot() if coordinator else {'enabled': False}
         stats['tasks'] = {r['status']: r['n'] for r in store.connection.execute(
             'SELECT status,COUNT(*) n FROM tasks GROUP BY status')}
         return web.json_response(stats)

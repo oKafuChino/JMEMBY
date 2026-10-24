@@ -17,8 +17,9 @@ logger = logging.getLogger(__name__)
 
 
 class Worker:
-    def __init__(self, store, provider, komga, settings):
+    def __init__(self, store, provider, komga, settings, active_tasks=None):
         self.store, self.provider, self.komga, self.settings = store, provider, komga, settings
+        self.active_tasks = active_tasks if active_tasks is not None else set()
         self.root = Path(settings.storage_root).resolve()
         self.library = self.root / "library"
         self.staging = self.root / "staging"
@@ -50,9 +51,10 @@ class Worker:
         self.heartbeat = time.monotonic()
         if not self.settings.disk_space_check_enabled or shutil.disk_usage(self.root).free >= self.settings.resume_free_space_gb * 1024**3:
             self.store.resume_disk()
-        task = self.store.next_task()
+        task = self.store.next_task(exclude=self.active_tasks)
         if task is None:
             return False
+        self.active_tasks.add(task['id'])
         try:
             await self.execute(task)
             self.store.finish(task["id"], "COMPLETED")
@@ -85,6 +87,8 @@ class Worker:
         except Exception as exc:
             logger.error("task_failure task=%s exception_type=%s", task["id"], type(exc).__name__)
             self.store.finish(task["id"], "FAILED", "INTERNAL", "内部错误，请检查服务日志")
+        finally:
+            self.active_tasks.discard(task['id'])
         return True
 
     async def execute(self, task):
