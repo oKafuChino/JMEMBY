@@ -74,10 +74,10 @@ class GrantTests(unittest.TestCase):
     def test_v6_upgrade_preserves_users_and_is_idempotent(self):
         self.users.set_invite_required(1, False)
         self.users.register(2)
-        self.store.connection.executescript('DROP TABLE report_deliveries; DROP TABLE manga_reports; DROP TABLE manga_likes; ALTER TABLE manga DROP COLUMN removed_at; DROP TABLE download_nodes; ALTER TABLE users DROP COLUMN user_group; DROP TABLE registration_grants; DROP INDEX task_priority_sequence; ALTER TABLE tasks DROP COLUMN priority; PRAGMA user_version=6;')
+        self.store.connection.executescript('ALTER TABLE tasks DROP COLUMN notify_telegram; DROP TABLE report_deliveries; DROP TABLE manga_reports; DROP TABLE manga_likes; ALTER TABLE manga DROP COLUMN removed_at; DROP TABLE download_nodes; ALTER TABLE users DROP COLUMN user_group; DROP TABLE registration_grants; DROP INDEX task_priority_sequence; ALTER TABLE tasks DROP COLUMN priority; PRAGMA user_version=6;')
         self.store.close()
         self.store = Store(self.path)
-        self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0], 12)
+        self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0], 13)
         self.assertEqual(UserService(self.store, {1}).get(2)['user_group'], 'normal')
         self.store.close()
         self.store = Store(self.path)

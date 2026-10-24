@@ -226,7 +226,24 @@ class Store:
                 self.connection.close()
                 raise
             version = 12
-        if version != 12:
+        if version == 12:
+            try:
+                self.connection.executescript("""
+                    BEGIN IMMEDIATE;
+                    ALTER TABLE tasks ADD COLUMN notify_telegram INTEGER NOT NULL DEFAULT 1 CHECK(notify_telegram IN (0,1));
+                    ALTER TABLE manga_reports ADD COLUMN status TEXT NOT NULL DEFAULT 'PENDING'
+                        CHECK(status IN ('PENDING','RESOLVED','DISMISSED'));
+                    ALTER TABLE manga_reports ADD COLUMN handled_by INTEGER;
+                    ALTER TABLE manga_reports ADD COLUMN handled_at REAL;
+                    CREATE INDEX review_reports ON manga_reports(status,created_at,id);
+                    PRAGMA user_version=13;
+                    COMMIT;
+                """)
+            except BaseException:
+                self.connection.close()
+                raise
+            version = 13
+        if version != 13:
             self.connection.close()
             raise RuntimeError("Unsupported database version; restore or migrate before startup")
 
@@ -247,13 +264,15 @@ class Store:
         row = self.connection.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         return dict(row) if row else None
 
-    def tasks(self, user_id=None, page=0, active=False):
+    def tasks(self, user_id=None, page=0, active=False, telegram_only=False):
         clauses, args = [], []
         if user_id is not None:
             clauses.append("user_id=?")
             args.append(user_id)
         if active:
             clauses.append("status NOT IN ('COMPLETED','FAILED','CANCELLED')")
+        if telegram_only:
+            clauses.append('notify_telegram=1')
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         return [dict(r) for r in self.connection.execute(
             "SELECT * FROM tasks" + where + " ORDER BY created_at DESC LIMIT 10 OFFSET ?", (*args, page * 10))]
@@ -321,11 +340,12 @@ class Store:
         if status not in TERMINAL:
             raise ValueError("not terminal")
         with self.transaction() as db:
-            old = db.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
+            old = db.execute("SELECT status,notify_telegram FROM tasks WHERE id=?", (task_id,)).fetchone()
             if not old or old[0] in TERMINAL:
                 return
             self.update(task_id, status=status, error_code=code, error=error)
-            db.execute("INSERT OR IGNORE INTO notifications(task_id,event) VALUES (?,?)", (task_id, status))
+            if old['notify_telegram']:
+                db.execute("INSERT OR IGNORE INTO notifications(task_id,event) VALUES (?,?)", (task_id, status))
 
     def user_priority(self, user_id):
         row = self.connection.execute("SELECT user_group,blocked FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -381,7 +401,7 @@ class Store:
                 or (chat_id is not None and confirmation["chat_id"] != chat_id)):
             raise ValueError("按钮仅限发起人在原聊天中操作")
 
-    def confirm(self, token, user_id, chat_id=None):
+    def confirm(self, token, user_id, chat_id=None, *, notify_telegram=True):
         with self.transaction() as db:
             confirmation = db.execute("SELECT * FROM confirmations WHERE token=?", (token,)).fetchone()
             self._check_confirmation(confirmation, user_id, chat_id)
@@ -391,21 +411,23 @@ class Store:
                 return self.get(confirmation["task_id"])
             if confirmation["expires"] < time.time():
                 raise ValueError("确认已过期，请重新提交")
-            task = self._submit(db, decode_manga(confirmation["snapshot"]), user_id, confirmation["chat_id"])
+            task = self._submit(db, decode_manga(confirmation["snapshot"]), user_id, confirmation["chat_id"], notify_telegram=notify_telegram)
             if task is not None:
                 db.execute("UPDATE confirmations SET task_id=? WHERE token=?", (task["id"], token))
         if task is None:
             raise ValueError("该漫画已有任务，已将原任务移至白名单优先队列末尾，未创建新任务")
         return task
 
-    def submit(self, manga, user_id, chat_id, retry_of=None):
+    def submit(self, manga, user_id, chat_id, retry_of=None, *, notify_telegram=True):
         with self.transaction() as db:
-            task = self._submit(db, manga, user_id, chat_id, retry_of)
+            task = self._submit(db, manga, user_id, chat_id, retry_of, notify_telegram=notify_telegram)
         if task is None:
             raise ValueError("该漫画已有任务，已将原任务移至白名单优先队列末尾，未创建新任务")
         return task
 
-    def _submit(self, db, manga, user_id, chat_id, retry_of=None):
+    def _submit(self, db, manga, user_id, chat_id, retry_of=None, *, notify_telegram=True):
+        if type(notify_telegram) is not bool:
+            raise ValueError('invalid notification setting')
         if not manga.chapters or len({c.source_id for c in manga.chapters}) != len(manga.chapters):
             raise ValueError("章节清单为空或重复")
         # Called under BEGIN IMMEDIATE: another submission cannot pass this
@@ -418,8 +440,8 @@ class Store:
                    (manga.source, manga.source_id, manga.title, directory, raw))
         record = db.execute("SELECT * FROM manga WHERE source=? AND source_id=?", (manga.source, manga.source_id)).fetchone()
         task_id, now = uuid.uuid4().hex, time.time()
-        db.execute("INSERT INTO tasks(id,manga_id,snapshot,user_id,chat_id,retry_of,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
-                   (task_id, record["id"], raw, user_id, chat_id, retry_of, now, now))
+        db.execute("INSERT INTO tasks(id,manga_id,snapshot,user_id,chat_id,retry_of,created_at,updated_at,notify_telegram) VALUES (?,?,?,?,?,?,?,?,?)",
+                   (task_id, record["id"], raw, user_id, chat_id, retry_of, now, now, int(notify_telegram)))
         sequence = db.execute("SELECT COALESCE(MAX(queue_sequence),0)+1 FROM tasks").fetchone()[0]
         db.execute("UPDATE tasks SET queue_sequence=?,priority=? WHERE id=?", (sequence, self.user_priority(user_id), task_id))
         for chapter in manga.chapters:
@@ -460,7 +482,9 @@ class Store:
                 return self.get(row["id"])
 
     def notifications(self):
-        return [dict(r) for r in self.connection.execute("SELECT * FROM notifications WHERE status='PENDING' AND next_at<=? LIMIT 10", (time.time(),))]
+        return [dict(r) for r in self.connection.execute(
+            "SELECT n.* FROM notifications n JOIN tasks t ON t.id=n.task_id "
+            "WHERE n.status='PENDING' AND n.next_at<=? AND t.notify_telegram=1 LIMIT 10", (time.time(),))]
 
     def notified(self, notification_id):
         self.connection.execute("UPDATE notifications SET status='SENT' WHERE id=?", (notification_id,))

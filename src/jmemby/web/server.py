@@ -5,6 +5,7 @@ from aiohttp import web
 
 from jmemby.web.ui import PAGE
 from jmemby.web.batch import BatchDownloads
+from jmemby.services.community import CommunityService
 
 
 def create_app(service, auth, settings):
@@ -40,6 +41,7 @@ def create_app(service, auth, settings):
 
     app = web.Application(middlewares=[guard], client_max_size=65536)
     batches = BatchDownloads(service)
+    community = CommunityService(store, users)
 
     async def batch_lifecycle(app):
         yield
@@ -179,6 +181,26 @@ def create_app(service, auth, settings):
             raise ValueError('请确认移除漫画文件')
         return web.json_response(await manager.remove(request['admin'], data.get('manga_id')))
 
+    async def reports(request):
+        if request.method == 'GET':
+            return web.json_response(community.review_list(request['admin'], page_number(request),
+                request.query.get('status', 'PENDING'), request.query.get('q', '')))
+        data = await request.json()
+        if not isinstance(data, dict) or data.get('confirm') is not True:
+            raise ValueError('请确认举报处理操作')
+        operation, report_id = data.get('action'), data.get('report_id')
+        if operation == 'dismiss':
+            community.dismiss_report(request['admin'], report_id)
+            return web.json_response({'ok': True})
+        if operation == 'remove':
+            report = community.review_target(request['admin'], report_id)
+            manager = getattr(service, 'library', None)
+            if manager is None:
+                raise ValueError('漫画库管理服务不可用')
+            # File removal closes all pending reports for the manga before awaiting a scan.
+            return web.json_response(await manager.remove(request['admin'], report['manga_id']))
+        raise ValueError('不支持的举报处理操作')
+
     async def action(request):
         data = await request.json()
         if not isinstance(data, dict):
@@ -208,7 +230,8 @@ def create_app(service, auth, settings):
                     web.post('/api/batches', batch_start), web.get('/api/batches', batch_latest),
                     web.get('/api/batches/{batch_id}', batch_status),
                     web.get('/api/history', history), web.post('/api/action', action),
-                    web.get('/api/library', library), web.post('/api/library/remove', library)])
+                    web.get('/api/library', library), web.post('/api/library/remove', library),
+                    web.get('/api/reports', reports), web.post('/api/reports', reports)])
     return app
 
 

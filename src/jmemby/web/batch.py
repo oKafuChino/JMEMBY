@@ -93,7 +93,7 @@ class BatchDownloads:
                         manga, token = await self.service.preview(item['reference'], batch['user_id'], batch['user_id'])
                         self.service.users.require_admin(batch['user_id'])
                         item['title'] = manga.title[:500]
-                        task = self.service.confirm(token, batch['user_id'], batch['user_id'])
+                        task = self.service.confirm(token, batch['user_id'], batch['user_id'], notify_telegram=False)
                         item.update(status='queued', task_id=task['id'], message='已加入' +
                                     ('白名单优先队列' if task['priority'] else '普通队列'))
                     except ValueError as exc:

@@ -28,9 +28,9 @@ class TaskService:
         self.authorize(user_id)
         return self.store.submit(manga, user_id, chat_id)
 
-    def confirm(self, token, user_id, chat_id=None):
+    def confirm(self, token, user_id, chat_id=None, *, notify_telegram=True):
         self.authorize(user_id)
-        return self.store.confirm(token, user_id, chat_id)
+        return self.store.confirm(token, user_id, chat_id, notify_telegram=notify_telegram)
 
     def get(self, task_id, user_id):
         self.authorize(user_id)
@@ -57,4 +57,5 @@ class TaskService:
         if task["status"] != "FAILED":
             raise ValueError("只能重试失败的任务")
         return self.store.submit(decode_manga(task["snapshot"]), user_id,
-                                 task["chat_id"] if chat_id is None else chat_id, task_id)
+                                 task["chat_id"] if chat_id is None else chat_id, task_id,
+                                 notify_telegram=bool(task['notify_telegram']))

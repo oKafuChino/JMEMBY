@@ -51,6 +51,7 @@ class BatchTests(unittest.IsolatedAsyncioTestCase):
         for item in (result['items'][0], result['items'][-1]):
             task = self.store.get(item['task_id'])
             self.assertEqual((task['user_id'], task['chat_id'], task['priority']), (1, 1, 0))
+            self.assertEqual(task['notify_telegram'], 0)
         self.assertEqual(self.store.next_task()['id'], result['items'][0]['task_id'])
         self.assertEqual(self.store.next_task()['id'], result['items'][-1]['task_id'])
 
@@ -125,7 +126,33 @@ class BatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('移至', result['items'][0]['message'])
         original = self.store.get(old['id'])
         self.assertEqual((original['priority'], original['user_id'], original['chat_id']), (1, 2, -100))
+        self.assertEqual(original['notify_telegram'], 1)
         self.assertEqual(self.store.get(result['items'][1]['task_id'])['priority'], 1)
+
+    async def test_batch_silent_for_all_terminal_states_and_after_restart(self):
+        result=await self.finish(self.batches.start(1,'42 43 44'))
+        task_ids=[i['task_id'] for i in result['items']]
+        # Even an accidentally set message id cannot enroll a silent task in progress updates.
+        for task_id in task_ids:self.store.update(task_id,message_id=99)
+        self.assertEqual(self.store.tasks(active=True,telegram_only=True),[])
+        path=Path(self.temp.name)/'db'
+        reopened=Store(path)
+        try:
+            self.assertTrue(all(reopened.get(t)['notify_telegram']==0 for t in task_ids))
+        finally:reopened.close()
+        for task_id,status in zip(task_ids,('COMPLETED','FAILED','CANCELLED')):
+            self.store.finish(task_id,status)
+        self.assertEqual(self.store.notifications(),[])
+        self.assertEqual(self.store.connection.execute('SELECT COUNT(*) FROM notifications').fetchone()[0],0)
+        retry=self.service.retry(task_ids[1],1)
+        self.assertEqual(retry['notify_telegram'],0)
+
+    async def test_silent_batches_do_not_hide_or_mute_manual_tasks(self):
+        manual=self.store.submit(self.manga,2,-100)
+        await self.finish(self.batches.start(1,' '.join(str(n) for n in range(100,125))))
+        self.assertEqual([t['id'] for t in self.store.tasks(active=True,telegram_only=True)],[manual['id']])
+        self.store.finish(manual['id'],'COMPLETED')
+        self.assertEqual([n['task_id'] for n in self.store.notifications()],[manual['id']])
 
     async def test_finished_results_expire_without_deleting_download_tasks(self):
         batch = await self.finish(self.batches.start(1, '42'))

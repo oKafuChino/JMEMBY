@@ -75,6 +75,59 @@ if HAS_AIOHTTP:
 
 @unittest.skipUnless(HAS_AIOHTTP, 'aiohttp required for HTTP integration tests')
 class WebTests(unittest.IsolatedAsyncioTestCase):
+    async def test_report_review_auth_csrf_and_resolution(self):
+        from jmemby.services.library import LibraryService
+        from jmemby.services.community import CommunityService
+        from jmemby.domain.models import Chapter, Manga
+        with tempfile.TemporaryDirectory() as directory:
+            store=Store(Path(directory)/'db');users=UserService(store,{1})
+            users.register(2);users.register(3)
+            auth=AdminAuth(users);service=TaskService(store,None,users=users)
+            komga=SimpleNamespace(scan=AsyncMock())
+            service.library=LibraryService(store,users,directory,komga)
+            manga=Manga('jmcomic','42','Reported',(),(Chapter('52',1,'Chapter',()),))
+            task=store.submit(manga,2,2);chapter=store.chapters(task['id'])[0]
+            path=Path(directory)/'library'/chapter['path'];path.parent.mkdir(parents=True);path.write_bytes(b'fixture')
+            store.update_chapter(chapter['id'],status='IMPORTED');store.finish(task['id'],'COMPLETED')
+            community=CommunityService(store,users)
+            community.report(2,'42');community.report(3,'42')
+            ids=[r['id'] for r in community.review_list(1)['reports']]
+            settings=SimpleNamespace(web_public_url='http://localhost:8080')
+            client=TestClient(TestServer(create_app(service,auth,settings)))
+            await client.start_server()
+            try:
+                self.assertEqual((await client.get('/api/reports')).status,401)
+                token=auth.login(auth.issue(1));headers={'Cookie':'session='+token,'Origin':settings.web_public_url}
+                body={'action':'dismiss','report_id':ids[0],'confirm':True}
+                self.assertEqual((await client.post('/api/reports',json=body,headers=headers)).status,403)
+                headers['X-CSRF-Token']=auth.authenticate(token)['csrf']
+                response=await client.get('/api/reports?q=42',headers=headers)
+                self.assertEqual((await response.json())['pending'],2)
+                for query in ('status=bad','page=0','q='+'x'*201):
+                    self.assertEqual((await client.get('/api/reports?'+query,headers=headers)).status,400)
+                self.assertEqual((await client.post('/api/reports',json={**body,'confirm':False},headers=headers)).status,400)
+                headers['Origin']='https://evil.example'
+                self.assertEqual((await client.post('/api/reports',json=body,headers=headers)).status,403)
+                headers['Origin']=settings.web_public_url
+                self.assertEqual((await client.post('/api/reports',json=body,headers=headers)).status,200)
+                self.assertTrue(path.exists())
+                self.assertEqual((await client.post('/api/reports',json={**body,'action':'remove'},headers=headers)).status,400)
+                body={'action':'remove','report_id':ids[1],'confirm':True,'manga_id':999}
+                store.update(task['id'],status='DOWNLOADING')
+                self.assertEqual((await client.post('/api/reports',json=body,headers=headers)).status,400)
+                self.assertEqual(community.review_list(1)['pending'],1)
+                store.update(task['id'],status='COMPLETED')
+                response=await client.post('/api/reports',json=body,headers=headers)
+                self.assertEqual(response.status,200);self.assertTrue((await response.json())['ok'])
+                self.assertFalse(path.exists());komga.scan.assert_awaited_once()
+                response=await client.get('/api/reports?status=RESOLVED',headers=headers)
+                rows=await response.json();self.assertEqual(rows['total'],1);self.assertEqual(rows['pending'],0)
+                self.assertEqual(rows['reports'][0]['handled_by'],1)
+                users.admin_ids=frozenset()
+                self.assertEqual((await client.get('/api/reports',headers=headers)).status,401)
+            finally:
+                await client.close();store.close()
+
     async def test_library_admin_csrf_confirmation_and_removal(self):
         from jmemby.services.library import LibraryService
         from jmemby.domain.models import Chapter, Manga

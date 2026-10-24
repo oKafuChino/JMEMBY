@@ -99,6 +99,10 @@ class LibraryService:
         with self.store.transaction() as db:
             db.execute('UPDATE manga SET removed_at=? WHERE id=?', (time.time(), manga_id))
             db.execute("UPDATE chapters SET status='MISSING',pages=NULL,size=NULL,checksum=NULL,komga_id=NULL WHERE manga_id=?", (manga_id,))
+            db.execute("UPDATE manga_reports SET status='RESOLVED',handled_by=?,handled_at=? "
+                       "WHERE manga_id=? AND status='PENDING'", (actor, time.time(), manga_id))
+            db.execute("UPDATE report_deliveries SET status='SKIPPED' WHERE status='PENDING' AND report_id IN "
+                       "(SELECT id FROM manga_reports WHERE manga_id=? AND status<>'PENDING')", (manga_id,))
         logger.info('library_removed manga=%s actor=%s', manga_id, actor)
 
     async def remove(self, actor, manga_id):

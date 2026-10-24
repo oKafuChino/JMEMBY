@@ -343,8 +343,8 @@ async def notifications(bot, store, public_url, storage_root=None, community=Non
         await deliver_notifications(bot, store, public_url, storage_root)
         if community is not None:
             await deliver_reports(bot, community)
-        for task in store.tasks(active=True):
-            if not task["message_id"]:
+        for task in store.tasks(active=True, telegram_only=True):
+            if not task['notify_telegram'] or not task["message_id"]:
                 continue
             text = describe(task)
             if last_text.get(task["id"]) == text:
