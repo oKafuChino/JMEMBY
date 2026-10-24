@@ -11,7 +11,6 @@ from jmemby.domain.models import Chapter, Manga, Page, normalize_tags
 from jmemby.storage.cbz import chapter_filename, library_directory
 
 TERMINAL = ("COMPLETED", "FAILED", "CANCELLED")
-SCHEDULE_DOWNLOAD_INTERVAL = 300
 
 
 def decode_manga(raw):
@@ -115,11 +114,17 @@ class Store:
                 COMMIT;
             """)
             version = 4
-        if version == 4:
-            from jmemby.db.schedule_schema import MIGRATION
-            self.connection.executescript(MIGRATION)
-            version = 5
-        if version != 5:
+        if version in {4, 5}:
+            from jmemby.db.migrations import FIFO_FROM_V4, REMOVE_AUTOMATION_FROM_V5
+            try:
+                self.connection.executescript(FIFO_FROM_V4 if version == 4 else REMOVE_AUTOMATION_FROM_V5)
+            except BaseException:
+                # Closing rolls back an unfinished migration and releases its
+                # write lock; never continue with a partially upgraded database.
+                self.connection.close()
+                raise
+            version = 6
+        if version != 6:
             self.connection.close()
             raise RuntimeError("Unsupported database version; restore or migrate before startup")
 
@@ -224,23 +229,12 @@ class Store:
         if active:
             if active["user_id"] != user_id:
                 raise ValueError("该漫画已有其他用户的下载任务，请稍后再试")
-            if retry_of and self.get(retry_of)["origin"] == "schedule":
-                raise ValueError("该漫画已有活动任务，请等待结束后再重试自动任务")
             return dict(active)
         task_id, now = uuid.uuid4().hex, time.time()
         db.execute("INSERT INTO tasks(id,manga_id,snapshot,user_id,chat_id,retry_of,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
                    (task_id, record["id"], raw, user_id, chat_id, retry_of, now, now))
         sequence = db.execute("SELECT COALESCE(MAX(queue_sequence),0)+1 FROM tasks").fetchone()[0]
         db.execute("UPDATE tasks SET queue_sequence=? WHERE id=?", (sequence, task_id))
-        if retry_of:
-            parent = self.get(retry_of)
-            if parent and parent["origin"] == "schedule":
-                db.execute("UPDATE tasks SET origin='schedule',schedule_run_id=?,policy_version=? WHERE id=?",
-                           (parent["schedule_run_id"], parent["policy_version"], task_id))
-                db.execute("UPDATE auto_download_claims SET task_id=? WHERE task_id=?", (task_id, retry_of))
-                db.execute("UPDATE schedule_run_items SET task_id=?,decision='QUEUED',reason='RETRY_PENDING' WHERE task_id=?", (task_id, retry_of))
-                db.execute("UPDATE schedule_runs SET status='QUEUED',error=NULL WHERE id=?", (parent["schedule_run_id"],))
-                db.execute("DELETE FROM schedule_notifications WHERE run_id=? AND event='finished'", (parent["schedule_run_id"],))
         for chapter in manga.chapters:
             path = (Path(record["directory"]) / chapter_filename(chapter, manga)).as_posix()
             db.execute("INSERT OR IGNORE INTO chapters(manga_id,source_id,ordinal,title,path) VALUES (?,?,?,?,?)",
@@ -260,39 +254,13 @@ class Store:
                 self.finish(task_id, "CANCELLED", "CANCELLED", "任务已取消；已发布文件保留")
 
     def recover(self):
-        with self.transaction() as db:
-            active = db.execute("SELECT value FROM settings WHERE key='schedule_active_download'").fetchone()
-            if active:
-                # A process may have stopped before recording completion. Wait
-                # a full interval before resuming automatic work after recovery.
-                self._release_scheduled_download(db, active[0])
-            db.execute("UPDATE tasks SET status='QUEUED' WHERE status IN ('DOWNLOADING','PACKAGING','IMPORT_PENDING')")
-
-    def _release_scheduled_download(self, db, task_id):
-        active = db.execute("SELECT value FROM settings WHERE key='schedule_active_download'").fetchone()
-        if not active or active[0] != task_id:
-            return
-        db.execute("INSERT INTO settings(key,value) VALUES ('schedule_download_after',?) "
-                   "ON CONFLICT(key) DO UPDATE SET value=MAX(CAST(settings.value AS REAL),CAST(excluded.value AS REAL))",
-                   (str(time.time() + SCHEDULE_DOWNLOAD_INTERVAL),))
-        db.execute("DELETE FROM settings WHERE key='schedule_active_download'")
-
-    def release_scheduled_download(self, task_id):
-        with self.transaction() as db:
-            self._release_scheduled_download(db, task_id)
+        self.connection.execute("UPDATE tasks SET status='QUEUED' WHERE status IN ('DOWNLOADING','PACKAGING','IMPORT_PENDING')")
 
     def next_task(self):
         with self.transaction() as db:
-            now = time.time()
             row = db.execute("SELECT * FROM tasks WHERE status IN ('QUEUED','RETRY_WAIT','CANCEL_REQUESTED') "
-                             "AND (next_at<=? OR cancel_requested=1) "
-                             "AND (origin!='schedule' OR cancel_requested=1 OR ("
-                             "NOT EXISTS (SELECT 1 FROM settings WHERE key='schedule_active_download') AND "
-                             "COALESCE((SELECT CAST(value AS REAL) FROM settings WHERE key='schedule_download_after'),0)<=?)) "
-                             "ORDER BY queue_sequence LIMIT 1", (now, now)).fetchone()
+                             "AND (next_at<=? OR cancel_requested=1) ORDER BY queue_sequence LIMIT 1", (time.time(),)).fetchone()
             if row:
-                if row["origin"] == "schedule" and not row["cancel_requested"]:
-                    db.execute("INSERT INTO settings(key,value) VALUES ('schedule_active_download',?)", (row["id"],))
                 self.update(row["id"], status="DOWNLOADING")
                 return self.get(row["id"])
 

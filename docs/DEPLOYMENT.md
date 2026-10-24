@@ -53,10 +53,19 @@ docker compose exec app python -m jmemby.main backup --destination /app-data/bac
 
 Docker Compose 和镜像构建尚未在当前机器验证（本机无 Docker）。CPU/内存上限需要在目标 VPS 检查是否实际生效。
 
-## 定时标签下载升级
+## 自动下载功能移除升级（2026-10-24）
 
-定时功能使用 tzdata 依赖和 schema 5，更新代码后需要重新构建 app 镜像。升级前一致性备份 `data/app`（包含数据库与 account.key）；启动会自动迁移 schema 1–4。新创建计划默认启用，旧暂停计划保持暂停。每次上限 50 部，自动下载每部处理结束后间隔 5 分钟；等待状态存入现有 settings 表，不增加 schema 版本。旧版本不支持 schema 5，回滚时需要恢复升级前备份。
+新版仅保留用户发送漫画 ID/链接并确认的下载流程。更新前停止旧 app，备份 `data/app`（包含数据库及 account.key）；不要删除漫画存储目录。完成备份并同步代码后执行：
 
-定时服务与 Bot/worker 同进程，只运行一个 app 实例；不需要额外 cron 或开放端口。`SCHEDULE_DEFAULT_TIMEZONE=Asia/Hong_Kong` 仅影响新建计划，已保存时区不变；容器/宿主机本地时区无需跟着修改。
+```bash
+docker compose up -d --build --no-deps app
+docker compose logs --tail=100 app
+```
 
-升级后先运行项目检查并通过管理员 `/schedule_add` 创建未来几分钟的单次计划，完成后即启用。可在到点前使用 `/schedule_preview ID` 核对排序和 AI 排除；需要停止时用 `/schedule_pause ID`。小样本至少选择两部，核对上一部处理结束到下一部开始相隔至少 5 分钟，并在等待期间重启验证剩余等待保留。指定时间代表选书开始，不保证当时立即下载。`/status` 提供调度心跳、启用数量与最近运行状态。验收步骤和已知限制见 [定时功能验收记录](SCHEDULE_VALIDATION.md)。
+启动会自动迁移 schema 1–5 到 schema 6。对 schema 5：取消所有未完成的自动来源任务，停止其待发送通知，删除自动计划及相关表、任务上的自动来源字段和五分钟等待状态。已完成/失败/取消的历史任务、已有文件及章节路径、用户、邀请码、Komga 账号均保留。手动任务继续正常恢复、取消及重试；不自动删除已下载或部分下载的文件。
+
+`SCHEDULE_DEFAULT_TIMEZONE` 已停用，旧 `.env` 中保留该变量也不会影响启动，可自行删除。没有调度循环、标签自动搜索或自动通知服务，健康检查只依赖下载 worker。运行一个 app 实例即可。
+
+Telegram 发送 `/start` 刷新菜单。旧定时命令与按钮只显示功能已移除，不会创建任务。核对 `/status`、手动发送 ID 后的预览/确认、下载及 Komga 入库；同时检查旧自动队列不再继续执行。测试记录见 [功能移除记录](AUTO_DOWNLOAD_REMOVAL.md)。
+
+迁移不可通过换回旧镜像直接回滚：旧版不支持 schema 6，计划配置已删除；如需回滚必须停止新版并恢复升级前的数据库与密钥备份。

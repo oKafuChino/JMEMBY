@@ -19,8 +19,6 @@ from jmemby.services.users import UserService
 from jmemby.services.accounts import AccountService
 from jmemby.services.diagnostics import Diagnostics, RecentLogs
 from jmemby.workers.queue import Worker
-from jmemby.services.schedules import ScheduleService
-from jmemby.workers.scheduler import Scheduler
 
 
 async def run(settings, db_path, recent_logs):
@@ -35,21 +33,16 @@ async def run(settings, db_path, recent_logs):
     users = UserService(store, settings.allowed_user_ids)
     accounts = AccountService(users, komga, db_path.parent / "account.key")
     diagnostics = Diagnostics(users, worker, komga, recent_logs)
-    schedules = ScheduleService(store, users, provider, settings.storage_root)
-    scheduler = Scheduler(schedules)
-    diagnostics.scheduler = scheduler
-    dispatcher = create_dispatcher(TaskService(store, provider, settings.provider_domains, users), settings, accounts, diagnostics, schedules)
+    dispatcher = create_dispatcher(TaskService(store, provider, settings.provider_domains, users), settings, accounts, diagnostics)
     heartbeat = db_path.parent / "heartbeat"
 
     async def health():
         while True:
-            if time.monotonic() - worker.heartbeat < 30 and time.monotonic() - scheduler.heartbeat < 30:
+            if time.monotonic() - worker.heartbeat < 30:
                 heartbeat.write_text(str(time.time()))
             await asyncio.sleep(5)
 
-    from jmemby.bot.schedules import schedule_notifications
-    jobs = [asyncio.create_task(worker.run()), asyncio.create_task(scheduler.run()),
-            asyncio.create_task(schedule_notifications(bot, schedules)),
+    jobs = [asyncio.create_task(worker.run()),
             asyncio.create_task(notifications(bot, store, settings.komga_public_url, settings.storage_root)),
             asyncio.create_task(health()), asyncio.create_task(dispatcher.start_polling(bot))]
     try:

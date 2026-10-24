@@ -67,13 +67,8 @@ class Diagnostics:
             komga = "检查超时"
         except Exception:
             komga = "检查失败，请查看应用日志"
-        schedule_text = ""
-        if hasattr(self, "scheduler"):
-            count = self.users.store.connection.execute("SELECT COUNT(*) FROM schedules WHERE enabled=1").fetchone()[0]
-            recent = self.users.store.connection.execute("SELECT status FROM schedule_runs ORDER BY created_at DESC LIMIT 1").fetchone()
-            schedule_text = f"定时计划：{count} 个启用；调度心跳 {time.monotonic() - self.scheduler.heartbeat:.0f} 秒前；最近运行 {recent[0] if recent else '无'}\n"
         return (f"🩺 服务状态\n\n运行时长：{int(time.monotonic() - self.started)} 秒\n"
                 f"Worker：{'正常' if age < 30 else '心跳延迟'}（{age:.0f} 秒前）\n"
                 f"数据库：可查询\n磁盘：{disk_text}\nKomga：{komga}\n"
-                f"注册用户：{stats['total']}（禁用 {stats['blocked']}）\n{schedule_text}\n"
+                f"注册用户：{stats['total']}（禁用 {stats['blocked']}）\n\n"
                 "任务统计（全部用户）：\n" + ("\n".join(f"{r[0]}：{r[1]}" for r in rows) or "暂无任务"))

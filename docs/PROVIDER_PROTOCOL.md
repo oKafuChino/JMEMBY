@@ -22,33 +22,6 @@
 
 响应 `{}`。适配器需以流式方式执行字节限制，处理图片还原，写入指定路径后再退出。还原后的文件也必须在限制内，不得另存任意位置。应用会再次解码和校验，但不能替代下载时的流量/磁盘限制。
 
-## 可选的定时标签发现能力
-
-以下两项为定时计划使用的扩展；旧适配器缺少能力时应返回 `DISCOVERY_UNSUPPORTED`，不能返回默认热度结果。原有按 ID 下载协议保持兼容。
-
-搜索请求：`{"operation":"search_tag","tag":"冒险","page":1}`。
-
-响应：`{"ids":["42","43"],"last":true,"mode":"SOURCE_LIKES_DESC","scope":"all"}`。ID 必须为数字字符串，单页最多 200 个；last 为布尔值；scope 明确查询时间范围。SOURCE_LIKES_DESC 要求已确认启用上游点赞降序，页序和页内顺序即 rank。若只有精确计数可用，返回 EXACT_LIKES_DESC，调用方会收集预算内候选并排序；禁止以浏览量或缩写计数冒充点赞排序。
-
-严格详情请求：`{"operation":"discovery_detail","id":"42"}`。
-
-响应示例：
-
-```json
-{
-  "manga": {
-    "source": "jmcomic", "source_id": "42", "title": "测试漫画", "authors": ["作者"],
-    "chapters": [{"source_id": "52", "ordinal": 1, "title": "第一章", "pages": []}]
-  },
-  "tags": ["冒险"], "markers": [], "complete": true, "ai_flag": false,
-  "likes_raw": "1K", "likes_exact": null
-}
-```
-
-tags 只含完整的普通标签，markers 为可用的作品、人物、分类标记。缺失、错误、被截断的必检字段必须使 complete=false，不能填空后宣称完整。每个标签/标记字段最多 1000 项、每项最多 1000 字符，超出视为不完整。ai_flag 为已知 AI 生成布尔标志；likes_exact 只能是非负精确整数或 null，1K/1W 等缩写保留在 likes_raw。
-
-所有响应仍受总输出限制。严格详情在选书及自动任务下载前都会调用；暂时失败应用应返回可重试错误，而非伪造空标签。
-
 ## Komga 入库操作
 
 请求 `{"operation":"import","paths":["漫画目录/章节.cbz"]}`。

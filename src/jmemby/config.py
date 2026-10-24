@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 import os
 import json
 import sys
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 def _int(name: str, default: int) -> int:
@@ -36,7 +35,6 @@ class Settings:
     max_pixels: int = 50_000_000
     max_chapter_pages: int = 2000
     max_task_bytes: int = 10 * 1024**3
-    schedule_default_timezone: str = "Asia/Hong_Kong"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -78,14 +76,9 @@ class Settings:
             max_pixels=_int("MAX_PIXELS", 50_000_000),
             max_chapter_pages=_int("MAX_CHAPTER_PAGES", 2000),
             max_task_bytes=_int("MAX_TASK_BYTES", 10 * 1024**3),
-            schedule_default_timezone=os.getenv("SCHEDULE_DEFAULT_TIMEZONE", "Asia/Hong_Kong"),
         )
 
     def __post_init__(self):
-        try:
-            ZoneInfo(self.schedule_default_timezone)
-        except (ZoneInfoNotFoundError, ValueError) as exc:
-            raise ValueError("SCHEDULE_DEFAULT_TIMEZONE must be an available IANA zone") from exc
         for name in ("download_concurrency", "retry_max_attempts", "operation_timeout", "max_page_bytes", "max_pixels", "max_chapter_pages", "max_task_bytes"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")

@@ -1,6 +1,6 @@
 # 开发验收记录
 
-最新增量：2026-10-18 定时标签下载已有代码和新增离线测试；详见 [定时功能验收记录](SCHEDULE_VALIDATION.md)。下方保留早期开发记录，真实 Telegram/JMComic/Komga/Docker 验收仍未完成。
+最新增量：2026-10-24 已移除自动下载功能；详见 [功能移除记录](AUTO_DOWNLOAD_REMOVAL.md)。下方保留早期开发记录，真实 Telegram/JMComic/Komga/Docker 验收仍未完成。
 
 日期：2026-10-10。状态：核心离线实现完成一轮验证，项目整体未完成，不具备真实服务验收条件。
 

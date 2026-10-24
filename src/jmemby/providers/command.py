@@ -9,10 +9,9 @@ import re
 
 from jmemby.domain.errors import JobError
 from jmemby.domain.models import Chapter, Manga, Page, normalize_tags
-from jmemby.providers.discovery import DiscoveryProvider
 
 
-class CommandProvider(DiscoveryProvider):
+class CommandProvider:
     source = "jmcomic"
 
     def child_environment(self):
@@ -21,7 +20,6 @@ class CommandProvider(DiscoveryProvider):
 
     def error_message(self, code):
         return {
-            "DISCOVERY_UNSUPPORTED": "数据源不支持经过验证的标签点赞搜索，计划未执行。",
             "TIMEOUT": "禁漫请求超时，请检查 VPS 到数据源的连接。",
             "DISK_FULL": "磁盘已满，释放空间后可手动重试。",
             "SIZE_LIMIT": "下载内容超出大小限制。",

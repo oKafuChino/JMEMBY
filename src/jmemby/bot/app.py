@@ -45,7 +45,7 @@ class Authorization(BaseMiddleware):
         return await handler(event, data)
 
 
-def create_dispatcher(service, settings, accounts, diagnostics, schedules=None):
+def create_dispatcher(service, settings, accounts, diagnostics):
     router = Router()
     users = service.users
     guard = Authorization(users)
@@ -57,7 +57,6 @@ def create_dispatcher(service, settings, accounts, diagnostics, schedules=None):
         if users.is_admin(user_id):
             rows.append(["⚙️ 管理面板", "👥 用户列表"])
             rows.append(["🩺 服务状态", "📜 最近日志"])
-            rows.append(["⏰ 定时下载"])
         return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=t) for t in row] for row in rows], resize_keyboard=True)
 
     async def reading_account(message, user_id):
@@ -90,7 +89,6 @@ def create_dispatcher(service, settings, accounts, diagnostics, schedules=None):
                 if users.invite_required():
                     help_text += "\n当前为邀请注册：请向管理员获取邀请码"
                 if users.is_admin(user_id):
-                    help_text += "\n/schedules 定时标签下载计划"
                     help_text += "\n/status 服务状态\n/logs 最近 100 条应用日志"
                     help_text += "\n管理员：/admin /users [页码]\n/registration on|off\n/ban 用户ID /unban 用户ID\n/disk 磁盘状态"
                     help_text += "\n/invite_mode on|off\n/invite_create [次数]\n/invites [页码]\n/invite_revoke 编号"
@@ -178,6 +176,8 @@ def create_dispatcher(service, settings, accounts, diagnostics, schedules=None):
                 task = service.retry(argument.strip(), user_id)
                 sent = await message.answer(describe(task))
                 service.store.update(task["id"], message_id=sent.message_id)
+            elif command == "/schedules" or command.startswith("/schedule_") or text == "⏰ 定时下载":
+                await message.answer("自动下载功能已移除。请发送漫画 ID 或链接，确认后手动下载。", reply_markup=menu(user_id))
             elif command.startswith("/") and command != "/download":
                 await message.answer("未知命令，请使用 /help")
             else:
@@ -199,7 +199,9 @@ def create_dispatcher(service, settings, accounts, diagnostics, schedules=None):
     async def callback_handler(callback: CallbackQuery):
         try:
             action, token = (callback.data or "").split(":", 1)
-            if action == "dismiss":
+            if action == "sched":
+                await callback.answer("自动下载功能已移除，此按钮已失效。", show_alert=True)
+            elif action == "dismiss":
                 service.store.dismiss(token, callback.from_user.id)
                 await callback.answer("已取消")
                 await callback.message.delete()
@@ -226,9 +228,6 @@ def create_dispatcher(service, settings, accounts, diagnostics, schedules=None):
             pass
 
     dispatcher = Dispatcher()
-    if schedules:
-        from jmemby.bot.schedules import create_schedule_router
-        dispatcher.include_router(create_schedule_router(schedules, settings))
     dispatcher.include_router(router)
     return dispatcher
 

@@ -103,60 +103,6 @@ def initialize_client():
 
 def handle(request, client):
     operation = request["operation"]
-    if operation == "search_tag":
-        try:
-            from jmcomic import JmMagicConstants
-            order, period = JmMagicConstants.ORDER_BY_LIKE, JmMagicConstants.TIME_ALL
-            search = client.search_tag
-        except (ImportError, AttributeError):
-            return {"error": {"code": "DISCOVERY_UNSUPPORTED"}}
-        if not isinstance(request["tag"], str) or not 1 <= len(request["tag"]) <= 100:
-            raise ValueError("Invalid tag")
-        page_number = request["page"]
-        if type(page_number) is not int or not 1 <= page_number <= 10:
-            raise ValueError("Invalid page")
-        try:
-            page = search(search_query=request["tag"], page=page_number, order_by=order, time=period)
-        except (TypeError, NotImplementedError):
-            return {"error": {"code": "DISCOVERY_UNSUPPORTED"}}
-        ids = [str(i) for i, _ in page.iter_id_title()]
-        return {"ids": ids, "last": not ids or page_number >= page.page_count,
-                "mode": "SOURCE_LIKES_DESC", "scope": "all", "order": str(order)}
-    if operation == "discovery_detail":
-        album = at_stage("discovery_detail", client.get_album_detail, request["id"])
-        complete, fields = True, {}
-        for field in ("tags", "works", "characters"):
-            try:
-                value = getattr(album, field) if field == "tags" else getattr(album, field, [])
-                if (not isinstance(value, (list, tuple)) or len(value) > 1000
-                        or any(not isinstance(t, str) or len(t) > 1000 for t in value)):
-                    raise ValueError()
-                fields[field] = list(value)
-            except Exception:
-                complete, fields[field] = False, []
-        try:
-            category = getattr(album, "category", [])
-            if isinstance(category, str):
-                category = [category]
-            if not isinstance(category, (list, tuple)) or any(not isinstance(t, str) for t in category):
-                raise ValueError()
-            flag = getattr(album, "ai_generated", False)
-            if type(flag) is not bool:
-                raise ValueError()
-        except Exception:
-            category, flag, complete = [], False, False
-        raw = str(getattr(album, "likes", ""))
-        exact = int(raw) if re.fullmatch(r"[0-9]{1,18}", raw) else None
-        title = album.name
-        if not isinstance(title, str) or not title or len(title) > 10000:
-            complete = False
-        return {"manga": {"source": "jmcomic", "source_id": request["id"],
-                          "title": title, "authors": list(album.authors),
-                          "tags": normalize_tags(fields["tags"] + fields["works"] + fields["characters"]),
-                          "chapters": [{"source_id": str(p.id), "ordinal": n,
-                                        "title": p.name, "pages": []} for n, p in enumerate(album, 1)]},
-                "tags": fields["tags"], "markers": fields["works"] + fields["characters"] + list(category),
-                "complete": complete, "ai_flag": flag, "likes_raw": raw, "likes_exact": exact}
     if operation == "download_batch":
         from jmemby.storage.cbz import validate_image
         entries = request["pages"]
