@@ -283,6 +283,10 @@ class NodeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.post('/install/enroll/vps-1',headers=headers)).status,401)
         headers={'Authorization':'Bearer '+data['config']['AGENT_TOKEN'],'X-Agent-ID':'vps-1','X-Agent-Instance':'a'*32}
         self.assertEqual((await self.client.post('/v1/agent/claim',json={},headers=headers)).status,200)
+        from jmemby.distributed.nodes import LOCAL_NODE_ID
+        self.registry.ensure_local()
+        local_headers={**headers,'X-Agent-ID':LOCAL_NODE_ID}
+        self.assertEqual((await self.client.post('/v1/agent/claim',json={},headers=local_headers)).status,401)
         self.registry.set_enabled('vps-1',False)
         self.assertEqual((await self.client.post('/v1/agent/claim',json={},headers=headers)).status,401)
 
@@ -323,6 +327,19 @@ class NodeHttpTests(unittest.IsolatedAsyncioTestCase):
             data=await (await client.get('/api/nodes',headers=headers)).json()
             self.assertEqual(next(a for a in data['agents'] if a['id']=='vps-2')['queue_scope'],'white')
             self.assertEqual(self.registry.get('vps-2')['revision'],revision)
+            from jmemby.distributed.nodes import LOCAL_NODE_ID
+            self.registry.ensure_local()
+            data=await (await client.get('/api/nodes',headers=headers)).json()
+            self.assertEqual(data['agents'][0]['id'],LOCAL_NODE_ID)
+            self.assertEqual(data['agents'][0]['kind'],'local')
+            self.assertTrue(data['agents'][0]['registered'])
+            for action in ('install','delete'):
+                self.assertEqual((await client.post('/api/nodes',json={'action':action,'id':LOCAL_NODE_ID},headers=headers)).status,400)
+            local={'action':'update','id':LOCAL_NODE_ID,'label':'主控下载','concurrency':2,'queue_scope':'normal'}
+            self.assertEqual((await client.post('/api/nodes',json=local,headers=headers)).status,200)
+            self.assertEqual(self.registry.get(LOCAL_NODE_ID)['queue_scope'],'normal')
+            self.assertEqual((await client.post('/api/nodes',json={'action':'enabled','id':LOCAL_NODE_ID,'enabled':False},headers=headers)).status,200)
+            self.assertFalse(self.registry.enabled(LOCAL_NODE_ID))
             self.coordinator.books['vps-2']={}
             self.assertEqual((await client.post('/api/nodes',json={'action':'delete','id':'vps-2'},headers=headers)).status,400)
             self.coordinator.books.pop('vps-2')

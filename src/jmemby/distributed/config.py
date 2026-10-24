@@ -27,7 +27,8 @@ class MasterSettings:
 
     @classmethod
     def from_env(cls):
-        # Remote execution is mandatory. Ignore legacy false values on upgrades.
+        # Agent scheduling stays enabled for both local and remote nodes.
+        # Ignore legacy false values on upgrades.
         try:
             tokens = json.loads(os.getenv("DOWNLOAD_AGENT_TOKENS", "{}"))
         except ValueError:

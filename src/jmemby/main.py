@@ -33,6 +33,9 @@ async def run(settings, db_path, recent_logs):
     store = Store(db_path)
     from jmemby.distributed.nodes import NodeRegistry
     coordinator.registry = NodeRegistry(store, distributed.tokens)
+    coordinator.registry.ensure_local()
+    from jmemby.distributed.local import LocalAgent
+    local_agent = LocalAgent(settings, coordinator)
     bot = Bot(settings.telegram_bot_token)
     from jmemby.distributed.workers import WorkerPool
     worker = WorkerPool(store, provider, komga, settings, coordinator)
@@ -61,7 +64,7 @@ async def run(settings, db_path, recent_logs):
                 heartbeat.write_text(str(time.time()))
             await asyncio.sleep(5)
 
-    jobs = [asyncio.create_task(worker.run()),
+    jobs = [asyncio.create_task(worker.run()), asyncio.create_task(local_agent.run()),
             asyncio.create_task(service.channel_push.run()),
             asyncio.create_task(notifications(bot, store, settings.komga_public_url, settings.storage_root, community)),
             asyncio.create_task(health()), asyncio.create_task(dispatcher.start_polling(bot))]

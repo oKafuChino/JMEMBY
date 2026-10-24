@@ -8,6 +8,7 @@ import time
 from urllib.parse import urlsplit
 
 _UNSET = object()
+LOCAL_NODE_ID = 'local:master'  # Outside the external node ID namespace.
 
 
 def digest(value):
@@ -41,7 +42,7 @@ class NodeRegistry:
         self.store, self.clock = store, clock
         # Tombstones prevent deleted environment nodes from returning on restart.
         with store.transaction() as db:
-            count = db.execute('SELECT COUNT(*) FROM download_nodes WHERE deleted=0').fetchone()[0]
+            count = db.execute('SELECT COUNT(*) FROM download_nodes WHERE deleted=0 AND id<>?', (LOCAL_NODE_ID,)).fetchone()[0]
             for name, token in (initial_tokens or {}).items():
                 if db.execute('SELECT 1 FROM download_nodes WHERE id=?', (name,)).fetchone():
                     continue
@@ -51,8 +52,16 @@ class NodeRegistry:
                            (name, name, digest(token), clock(), clock()))
                 count += 1
 
+    def ensure_local(self):
+        """Seed the built-in node once; preserve administrator settings on restart."""
+        self.store.connection.execute(
+            'INSERT OR IGNORE INTO download_nodes(id,label,concurrency,queue_scope,created_at,updated_at) '
+            "VALUES (?, '主控节点', 1, 'all', ?, ?)", (LOCAL_NODE_ID, self.clock(), self.clock()))
+
     def ids(self):
-        return [r[0] for r in self.store.connection.execute('SELECT id FROM download_nodes WHERE deleted=0 ORDER BY created_at,id')]
+        return [r[0] for r in self.store.connection.execute(
+            'SELECT id FROM download_nodes WHERE deleted=0 '
+            'ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END,created_at,id', (LOCAL_NODE_ID,))]
 
     def get(self, name):
         row = self.store.connection.execute('SELECT * FROM download_nodes WHERE id=? AND deleted=0', (name,)).fetchone()
@@ -67,6 +76,8 @@ class NodeRegistry:
             return False
 
     def authenticate(self, name, token):
+        if name == LOCAL_NODE_ID:
+            return False  # The built-in Agent never authenticates over the network.
         try:
             row = self.get(name)
             return bool(row['enabled'] and row['token_hash'] and hmac.compare_digest(row['token_hash'], digest(token)))
@@ -102,7 +113,7 @@ class NodeRegistry:
         with self.store.transaction() as db:
             if db.execute('SELECT 1 FROM download_nodes WHERE id=? AND deleted=0', (name,)).fetchone():
                 raise ValueError('节点 ID 已存在')
-            if db.execute('SELECT COUNT(*) FROM download_nodes WHERE deleted=0').fetchone()[0] >= 32:
+            if db.execute('SELECT COUNT(*) FROM download_nodes WHERE deleted=0 AND id<>?', (LOCAL_NODE_ID,)).fetchone()[0] >= 32:
                 raise ValueError('最多支持 32 个下载节点')
             db.execute('INSERT INTO download_nodes(id,label,concurrency,queue_scope,created_at,updated_at) VALUES (?,?,?,?,?,?) '
                        "ON CONFLICT(id) DO UPDATE SET label=excluded.label,concurrency=excluded.concurrency,queue_scope=excluded.queue_scope,"
@@ -125,12 +136,16 @@ class NodeRegistry:
                                       'ticket_hash=NULL,ticket_expires=NULL WHERE id=?', (int(enabled), self.clock(), name))
 
     def delete(self, name):
+        if name == LOCAL_NODE_ID:
+            raise ValueError('主控节点不能删除；如不需要本机下载，请停用节点')
         self.get(name)
         self.store.connection.execute("UPDATE download_nodes SET enabled=0,deleted=1,token_hash='',"
                                       'ticket_hash=NULL,ticket_expires=NULL,revision=revision+1,updated_at=? WHERE id=?',
                                       (self.clock(), name))
 
     def issue(self, name):
+        if name == LOCAL_NODE_ID:
+            raise ValueError('主控节点随主控自动运行，无需安装命令')
         node = self.get(name)
         if not node['enabled']:
             raise ValueError('请先启用节点')
@@ -143,6 +158,8 @@ class NodeRegistry:
         return {'command': install_command(origin, name, ticket), 'expires_at': expires, 'node_id': name}
 
     def enroll(self, name, ticket):
+        if name == LOCAL_NODE_ID:
+            raise ValueError('主控节点不能通过远程安装注册')
         origin = public_origin(self.origin())
         with self.store.transaction() as db:
             node = self.get(name)
@@ -159,4 +176,5 @@ class NodeRegistry:
     def public(self, name):
         row = self.get(name)
         return {**{key: row[key] for key in ('id', 'label', 'enabled', 'concurrency', 'queue_scope', 'created_at', 'updated_at')},
-                'registered': bool(row['token_hash'])}
+                'registered': name == LOCAL_NODE_ID or bool(row['token_hash']),
+                'kind': 'local' if name == LOCAL_NODE_ID else 'remote'}

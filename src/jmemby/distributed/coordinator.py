@@ -85,7 +85,7 @@ class Coordinator:
             raise ValueError('节点不存在')
         if not self.enabled(agent):
             raise ValueError('请先启用节点，再测试连通性')
-        if self.registry and not self.registry.get(agent)['token_hash']:
+        if self.registry and not self.registry.public(agent)['registered']:
             raise ValueError('节点尚未安装，请先执行安装命令')
         if agent in self.probes:
             raise ValueError('该节点正在测试，请稍候')
