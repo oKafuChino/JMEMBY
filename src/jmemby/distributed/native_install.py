@@ -10,6 +10,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
+import subprocess
 import sys
 import tarfile
 
@@ -127,11 +128,55 @@ depend() {{
     return name
 
 
+def prepare_state(state, service):
+    """Keep the shared parent traversable and each node's data private."""
+    import pwd
+    account = pwd.getpwnam(service)
+    state.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(state.parent, 0o755)
+    state.mkdir(exist_ok=True)
+    os.chown(state, account.pw_uid, account.pw_gid)
+    os.chmod(state, 0o700)
+
+
+def check_access(root, state, service):
+    """Check the installed runtime as its real user, without contacting a server."""
+    import pwd
+    account = pwd.getpwnam(service)
+    if account.pw_uid == 0:
+        raise ValueError('Agent 服务用户不能为 root')
+    script = '''import os, pathlib, sys, tempfile
+import aiohttp, PIL, jmcomic
+from jmemby.distributed.config import AgentSettings
+from jmemby.distributed.agent import Agent, log_handler
+from jmemby.runtime import instance_lock
+config = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')
+os.environ.update(line.split('=', 1) for line in config.splitlines() if line)
+os.chdir(os.environ['AGENT_WORK_DIR'])
+agent = Agent(AgentSettings.from_env())
+with instance_lock(agent.root / 'agent.lock'):
+    with tempfile.TemporaryDirectory(prefix='preflight-', dir=agent.root):
+        pass
+    handler = log_handler()
+    handler.close()
+'''
+    environment = {**os.environ, 'PYTHONPATH': str(root / 'current/src'),
+                   'PYTHONDONTWRITEBYTECODE': '1'}
+    subprocess.run([str(root / 'current/venv/bin/python'), '-c', script,
+                    str(root / '.env.agent')], cwd=state, env=environment,
+                   user=account.pw_uid, group=account.pw_gid, extra_groups=[], check=True)
+
+
 if __name__ == '__main__':
     operation, temporary, root = sys.argv[1:4]
     if operation == 'prepare':
         print(prepare(Path(temporary), Path(root)))
     elif operation == 'configure':
         print(configure(Path(temporary), Path(root), sys.argv[4]))
+    elif operation == 'check-access':
+        # CLI arguments here are root, state and service, not staging paths.
+        check_access(Path(temporary), Path(root), sys.argv[4])
+    elif operation == 'prepare-state':
+        prepare_state(Path(temporary), root)
     else:
         raise SystemExit('Unknown installation phase')

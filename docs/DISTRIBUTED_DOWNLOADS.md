@@ -147,6 +147,28 @@ Agent 收到 SIGTERM 后会取消下载、清理 SDK 子进程再退出。系统
 
 ## 状态与故障恢复
 
+### 原生 Agent 安装后一直离线、没有连接日志
+
+旧安装器使用 `umask 077`，首次创建 `/var/lib/komga-plus-agent` 时可能将这个共享父目录设为 root 所有的 700。即使节点自己的子目录已经属于服务用户，该用户仍无法穿过父目录；systemd 可能报 `200/CHDIR`，OpenRC 可能报工作目录访问失败，Agent 尚未发出网络请求就退出。
+
+本版安装器将共享父目录设为 755，各节点子目录仍为服务用户所有的 700，配置文件仍为 600；启动服务前还会以实际服务用户检查工作目录、配置读取、依赖导入、日志和锁文件访问。没有关闭 TLS 校验或放宽认证。
+
+已安装节点可先在附属 VPS 的 root 终端修复，无需重新安装或轮换凭据。将 `vps-1` 替换为实际节点 ID：
+
+```sh
+chmod 755 /var/lib/komga-plus-agent
+cd /opt/komga-plus-agent/vps-1
+agent_service=$(cat service-name)
+# Debian / Ubuntu
+systemctl restart "$agent_service"
+# Alpine 使用下面一条，代替 systemctl
+# rc-service "$agent_service" restart
+```
+
+不要使用递归 `chmod`，节点私有目录和配置应保持原权限。回网页刷新在线状态并测试连通性；若仍离线，查看 `systemctl status` / `rc-service status` 与节点 `agent.log`，继续排查实际 HTTP 状态、HTTPS 入口和节点启用状态。更新主控后重新生成的安装命令也包含上述修复。
+
+### 运行状态
+
 - 网页“节点管理”显示每台节点的在线状态、当前漫画和当前章节已接收页数。点击刷新更新；不显示 Token。
 - Telegram 管理员 `/status` 显示在线节点数和执行中漫画数量。任务进度也包含节点 ID。
 - 所有节点离线时，新任务保留在原队列，不消耗重试次数；主控不会自行下载图片。

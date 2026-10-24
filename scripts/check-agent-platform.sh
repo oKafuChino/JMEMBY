@@ -27,6 +27,7 @@ Path('/tmp/agent-release').write_text(str(release))
 Path('/tmp/agent-installer.sh').write_text(INSTALL_SCRIPT)
 PY
 sh -n /tmp/agent-installer.sh
+python3 -m unittest discover -s /workspace/tests -p test_native_permissions.py -v
 agent_release=$(cat /tmp/agent-release)
 /tmp/agent-venv/bin/python -m pip install --disable-pip-version-check --no-cache-dir --upgrade pip
 /tmp/agent-venv/bin/python -m pip install --disable-pip-version-check --no-cache-dir \
@@ -40,4 +41,33 @@ from jmemby.distributed.config import AgentSettings
 assert sys.version_info >= (3, 11)
 assert AgentSettings('https://example.com', 'test', 'a' * 43).concurrency == 1
 print('Native agent dependency/import smoke test passed:', sys.version)
+PY
+# Exercise the production preflight as a non-root user, including the venv,
+# private configuration, state directory, log handler and process lock.
+PYTHONPATH=/workspace/src python3 - <<'PY'
+import hashlib, json, os, pwd
+from pathlib import Path
+from jmemby.distributed.native_install import configure, prepare_state, check_access
+temporary = Path('/tmp/agent-package')
+root = Path('/tmp/agent-install')
+release = Path('/tmp/agent-release').read_text()
+checksum = hashlib.sha256((temporary / 'agent.tar.gz').read_bytes()).hexdigest()
+(temporary / 'enrollment.json').write_text(json.dumps({
+    'bundle_sha256': checksum,
+    'config': {'AGENT_ID':'ci-test', 'AGENT_MASTER_URL':'https://example.com',
+               'AGENT_TOKEN':'a'*43, 'AGENT_CONCURRENCY':1}}))
+name = configure(temporary, root, 'ci-test')
+(root / 'current').symlink_to(release, target_is_directory=True)
+(Path(release) / 'venv').symlink_to('/tmp/agent-venv', target_is_directory=True)
+(root / '.env.agent.new').replace(root / '.env.agent')
+account = pwd.getpwnam('nobody')
+os.chown(root / '.env.agent', account.pw_uid, account.pw_gid)
+state = Path('/var/lib/komga-plus-agent') / name
+mask = os.umask(0o077)
+try:
+    prepare_state(state, 'nobody')
+    check_access(root, state, 'nobody')
+finally:
+    os.umask(mask)
+print('Native agent service-user preflight passed (no network request).')
 PY

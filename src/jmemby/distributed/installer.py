@@ -118,9 +118,9 @@ if ! id "$kpa_service" >/dev/null 2>&1; then
     fi
 fi
 [ "$(id -u "$kpa_service")" -ne 0 ] || exit 1
-mkdir -p -- "$kpa_state"
-chown "$kpa_service:$kpa_service" "$kpa_state"
-chmod 700 "$kpa_state"
+# umask 077 also applies to mkdir -p's intermediate directory. The shared
+# parent must be traversable; each node's private state remains mode 700.
+python3 "$kpa_tmp/native_install.py" prepare-state "$kpa_state" "$kpa_service"
 chown "root:$kpa_service" "$kpa_root"
 chmod 750 "$kpa_root"
 chmod 755 /opt/komga-plus-agent "$kpa_root/releases"
@@ -143,6 +143,8 @@ mv -f "$kpa_root/.env.agent.new" "$kpa_root/.env.agent"
 mv -f "$kpa_root/run-agent.new" "$kpa_root/run-agent"
 ln -sfn "$kpa_release" "$kpa_root/current.new"
 mv -Tf "$kpa_root/current.new" "$kpa_root/current"
+# Root-only import checks cannot catch a service user blocked by parent modes.
+python3 "$kpa_tmp/native_install.py" check-access "$kpa_root" "$kpa_state" "$kpa_service"
 if [ "$kpa_init" = systemd ]; then
     cp "$kpa_root/agent.service" "/etc/systemd/system/$kpa_service.service"
     systemctl daemon-reload

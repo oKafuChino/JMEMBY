@@ -212,6 +212,9 @@ class InstallerTests(unittest.TestCase):
         self.assertLess(INSTALL_SCRIPT.index("import aiohttp, PIL, jmcomic"),INSTALL_SCRIPT.index('/install/enroll/'))
         self.assertIn('systemctl enable',INSTALL_SCRIPT)
         self.assertIn('rc-update add',INSTALL_SCRIPT)
+        self.assertIn('prepare-state "$kpa_state" "$kpa_service"',INSTALL_SCRIPT)
+        self.assertLess(INSTALL_SCRIPT.index('check-access "$kpa_root"'),
+                        INSTALL_SCRIPT.index('systemctl restart'))
         embedded=INSTALL_SCRIPT.split("<<'KPA_PY'\n",1)[1].split('\nKPA_PY\n',1)[0]
         compile(embedded,'native-installer','exec')
 
