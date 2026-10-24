@@ -1,6 +1,7 @@
 """Self-contained panel markup and styles; no external assets or fonts."""
 
 from jmemby.web.nodes import MARKUP as NODES_MARKUP
+from jmemby.web.library import MARKUP as LIBRARY_MARKUP
 
 PAGE_START = r'''<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -30,7 +31,7 @@ main{padding:32px;max-width:1600px;margin:0 auto}.authenticated main{margin-left
 <button data-view="tasks"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M4 15v5h16v-5"/></svg>下载队列</button>
 <button data-view="batch"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="14" height="14" rx="2"/><path d="M17 7V3H3v14h4m7-6v6m-3-3h6"/></svg>批量下载</button>
 <button data-view="nodes"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6h.01M7 17h.01M12 10v4"/></svg>节点管理</button>
-<button data-view="users"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3m1-16a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 4v2"/></svg>用户管理</button>
+<button data-view="library"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h7v16H3zM14 4h7v16h-7zM6 8h1m10 0h1"/></svg>漫画列表</button><button data-view="users"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3m1-16a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 4v2"/></svg>用户管理</button>
 <button data-view="history"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h12v15H4zM8 2h12v15M7 9h6m-6 4h6m-6 4h3"/></svg>下载来源</button></nav><div class="sidebar-bottom"><strong>你的漫画，集中管理。</strong>Telegram × Komga<br>Komga Plus 管理工作区</div></aside>
 <div class="workspace-head"><div><div class="eyebrow">LIBRARY MANAGEMENT</div><h1 id="viewTitle">服务概览</h1><p id="viewDescription">了解用户与下载任务的最新情况。</p></div><div class="refresh-area"><button id="refresh" class="quiet"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 6a8 8 0 0 1 13 2M5 16a8 8 0 0 0 13 2"/></svg>刷新</button><small id="updatedAt">等待更新</small></div></div>
 <section id="overview" aria-label="服务概览"><div class="hero"><div><div class="eyebrow">YOUR MANGA, ALL IN ONE PLACE</div><h2>从提交到入库，一目了然。</h2><p>查看下载状态、管理读者，让漫画库保持有序。</p></div><div class="hero-actions"><button class="primary" data-go="batch">＋ 批量下载</button><button class="quiet" data-go="tasks">查看队列 <span aria-hidden="true">↗</span></button></div></div><div id="stats" class="cards" aria-label="用户统计"></div><div class="overview-grid"><div class="panel"><div class="panel-head"><div><h2>下载状态</h2><p>各阶段任务数量，刷新后更新</p></div><span class="tag">双队列调度</span></div><div id="taskStats" class="status-grid"></div></div><div class="panel"><div class="panel-head"><div><h2>注册设置</h2><p>控制新用户的访问入口</p></div></div><div class="setting-row"><div><h3>开放新用户注册</h3><p>关闭后，现有用户仍可继续使用</p></div><button id="registration" class="toggle" role="switch" aria-label="开放新用户注册" aria-checked="false">加载中</button></div><div class="setting-row"><div><h3>注册需要邀请码</h3><p>已获注册资格的用户免邀请码</p></div><button id="invite_mode" class="toggle" role="switch" aria-label="注册需要邀请码" aria-checked="false">加载中</button></div><div class="panel-foot">在群聊回复用户使用 <code>/kk</code> 或 <code>/white</code> 授权。<br>阅读账号权限请在 Komga 中管理。</div></div></div></section>
@@ -41,4 +42,4 @@ main{padding:32px;max-width:1600px;margin:0 auto}.authenticated main{margin-left
 <footer class="workspace-footer"><span>Komga Plus · 你的漫画管理工作区</span><span>管理员专属访问</span></footer></div></main>
 '''
 
-PAGE_START = PAGE_START.replace('<footer class="workspace-footer">', NODES_MARKUP + '<footer class="workspace-footer">')
+PAGE_START = PAGE_START.replace('<footer class="workspace-footer">', NODES_MARKUP + LIBRARY_MARKUP + '<footer class="workspace-footer">')

@@ -75,6 +75,55 @@ if HAS_AIOHTTP:
 
 @unittest.skipUnless(HAS_AIOHTTP, 'aiohttp required for HTTP integration tests')
 class WebTests(unittest.IsolatedAsyncioTestCase):
+    async def test_library_admin_csrf_confirmation_and_removal(self):
+        from jmemby.services.library import LibraryService
+        from jmemby.domain.models import Chapter, Manga
+        with tempfile.TemporaryDirectory() as directory:
+            store=Store(Path(directory)/'db')
+            users=UserService(store,{1});users.register(2)
+            auth=AdminAuth(users);service=TaskService(store,None,users=users)
+            komga=SimpleNamespace(scan=AsyncMock())
+            service.library=LibraryService(store,users,directory,komga)
+            manga=Manga('jmcomic','42','Library Test',(),(Chapter('52',1,'Chapter',()),))
+            task=store.submit(manga,2,2)
+            record=store.chapters(task['id'])[0]
+            path=Path(directory)/'library'/record['path']
+            path.parent.mkdir(parents=True);path.write_bytes(b'fixture')
+            settings=SimpleNamespace(web_public_url='http://localhost:8080')
+            client=TestClient(TestServer(create_app(service,auth,settings)))
+            await client.start_server()
+            data={'manga_id':task['manga_id'],'confirm':True}
+            try:
+                self.assertEqual((await client.get('/api/library')).status,401)
+                self.assertEqual((await client.post('/api/library/remove',json=data,
+                    headers={'Origin':settings.web_public_url})).status,401)
+                token=auth.login(auth.issue(1));headers={'Cookie':'session='+token,'Origin':settings.web_public_url}
+                self.assertEqual((await client.post('/api/library/remove',json=data,headers=headers)).status,403)
+                headers['X-CSRF-Token']=auth.authenticate(token)['csrf']
+                response=await client.get('/api/library',params={'q':'Library'},headers=headers)
+                self.assertEqual((await response.json())['total'],1)
+                self.assertEqual((await client.get('/api/library?q=absent',headers=headers)).status,200)
+                self.assertEqual((await client.get('/api/library?page=0',headers=headers)).status,400)
+                self.assertEqual((await client.post('/api/library/remove',json=data,headers=headers)).status,400)
+                self.assertTrue(path.exists())
+                store.finish(task['id'],'COMPLETED')
+                for invalid in ({'manga_id':task['manga_id']}, {'manga_id':True,'confirm':True}):
+                    self.assertEqual((await client.post('/api/library/remove',json=invalid,headers=headers)).status,400)
+                headers['Origin']='https://evil.example'
+                self.assertEqual((await client.post('/api/library/remove',json=data,headers=headers)).status,403)
+                self.assertTrue(path.exists())
+                headers['Origin']=settings.web_public_url
+                response=await client.post('/api/library/remove',json=data,headers=headers)
+                self.assertEqual(response.status,200)
+                self.assertTrue((await response.json())['ok'])
+                self.assertFalse(path.exists());komga.scan.assert_awaited_once()
+                response=await client.get('/api/library',headers=headers)
+                self.assertEqual((await response.json())['total'],0)
+                users.admin_ids=frozenset()
+                self.assertEqual((await client.get('/api/library',headers=headers)).status,401)
+            finally:
+                await client.close();store.close()
+
     async def test_user_search_and_current_task_node_assignment(self):
         from jmemby.distributed.config import MasterSettings
         from jmemby.distributed.coordinator import Coordinator

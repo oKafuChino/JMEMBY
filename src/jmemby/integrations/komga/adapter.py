@@ -143,10 +143,14 @@ class KomgaAPI:
             raise ApiError("KOMGA_ACCOUNT_PERMISSIONS")
         return {"id": str(user["id"]), "email": email}
 
-    def import_paths(self, paths):
-        expected = self.expected_paths(paths)
+    def scan(self):
         self.check_library()
         self.request("POST", f"/api/v1/libraries/{quote(self.library_id, safe='')}/scan")
+        return {"ok": True}
+
+    def import_paths(self, paths):
+        expected = self.expected_paths(paths)
+        self.scan()
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             found, page = {}, 0
@@ -181,6 +185,8 @@ def main():
             result = api.check_library()
         elif request["operation"] == "import":
             result = api.import_paths(request["paths"])
+        elif request["operation"] == "scan":
+            result = api.scan()
         elif request["operation"] == "provision_user":
             result = api.provision_user(request["email"], request["password"])
         else:

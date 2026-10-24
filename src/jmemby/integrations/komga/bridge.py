@@ -29,6 +29,11 @@ class KomgaBridge(CommandProvider):
             "RATE_LIMIT": "Komga 请求受限，请稍后重试。",
         }.get(code, "Komga 检查失败，请查看错误代码和容器日志。")
 
+    async def scan(self):
+        result = await self.request({"operation": "scan"})
+        if result.get('ok') is not True:
+            raise ValueError('invalid scan response')
+
     async def import_paths(self, paths):
         result = await self.request({"operation": "import", "paths": paths})
         books = result.get("books", {})

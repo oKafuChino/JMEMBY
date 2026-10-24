@@ -172,6 +172,16 @@ class AdapterTests(unittest.TestCase):
             self.assertFalse(destination.exists())
             self.assertFalse(list(Path(root).glob("*.jpg")))
 
+    def test_komga_standalone_scan_validates_library_and_requests_scan(self):
+        api = KomgaAPI("http://komga:25600", "user", "secret", "lib")
+        calls = []
+        def request(method, path):
+            calls.append((method, path))
+            return {'root': '/data'} if method == 'GET' else None
+        api.request = request
+        self.assertEqual(api.scan(), {'ok': True})
+        self.assertEqual(calls, [('GET','/api/v1/libraries/lib'), ('POST','/api/v1/libraries/lib/scan')])
+
     def test_komga_pages_and_exact_library_path(self):
         api = KomgaAPI("http://komga:25600", "user", "secret", "lib")
         calls = []

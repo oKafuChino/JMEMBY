@@ -168,6 +168,17 @@ def create_app(service, auth, settings):
         rows = service.recent_downloads(request['admin'], request.query.get('q', ''))
         return web.json_response({'tasks': rows, 'limit': 100})
 
+    async def library(request):
+        manager = getattr(service, 'library', None)
+        if manager is None:
+            raise ValueError('漫画库管理服务不可用')
+        if request.method == 'GET':
+            return web.json_response(manager.list(request['admin'], page_number(request), request.query.get('q', '')))
+        data = await request.json()
+        if not isinstance(data, dict) or data.get('confirm') is not True:
+            raise ValueError('请确认移除漫画文件')
+        return web.json_response(await manager.remove(request['admin'], data.get('manga_id')))
+
     async def action(request):
         data = await request.json()
         if not isinstance(data, dict):
@@ -196,7 +207,8 @@ def create_app(service, auth, settings):
                     web.get('/api/users', members), web.get('/api/tasks', tasks),
                     web.post('/api/batches', batch_start), web.get('/api/batches', batch_latest),
                     web.get('/api/batches/{batch_id}', batch_status),
-                    web.get('/api/history', history), web.post('/api/action', action)])
+                    web.get('/api/history', history), web.post('/api/action', action),
+                    web.get('/api/library', library), web.post('/api/library/remove', library)])
     return app
 
 

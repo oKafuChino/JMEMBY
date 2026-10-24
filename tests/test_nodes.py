@@ -132,10 +132,10 @@ class NodeTests(unittest.TestCase):
             self.assertEqual(MasterSettings.from_env().tokens, {})
 
     def test_schema_eight_migration_preserves_settings_and_is_idempotent(self):
-        self.store.connection.executescript('DROP TABLE download_nodes; PRAGMA user_version=8;')
+        self.store.connection.executescript('ALTER TABLE manga DROP COLUMN removed_at; DROP TABLE download_nodes; PRAGMA user_version=8;')
         self.store.close()
         self.store = Store(self.path)
-        self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0],10)
+        self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0],11)
         self.assertEqual(NodeRegistry(self.store).origin(),'https://agents.example.com')
         self.store.close()
         self.store = Store(self.path)

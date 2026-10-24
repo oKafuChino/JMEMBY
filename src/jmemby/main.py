@@ -41,6 +41,8 @@ async def run(settings, db_path, recent_logs):
     diagnostics = Diagnostics(users, worker, komga, recent_logs)
     service = TaskService(store, provider, settings.provider_domains, users)
     service.download_coordinator = coordinator
+    from jmemby.services.library import LibraryService
+    service.library = LibraryService(store, users, settings.storage_root, komga, coordinator)
     from jmemby.web.auth import AdminAuth
     web_auth = AdminAuth(users) if settings.web_enabled else None
     dispatcher = create_dispatcher(service, settings, accounts, diagnostics, web_auth)

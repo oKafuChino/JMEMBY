@@ -188,7 +188,19 @@ class Store:
                 self.connection.close()
                 raise
             version = 10
-        if version != 10:
+        if version == 10:
+            try:
+                self.connection.executescript("""
+                    BEGIN IMMEDIATE;
+                    ALTER TABLE manga ADD COLUMN removed_at REAL;
+                    PRAGMA user_version=11;
+                    COMMIT;
+                """)
+            except BaseException:
+                self.connection.close()
+                raise
+            version = 11
+        if version != 11:
             self.connection.close()
             raise RuntimeError("Unsupported database version; restore or migrate before startup")
 
@@ -301,12 +313,13 @@ class Store:
 
     def reject_duplicate(self, source, source_id, user_id=None):
         record = self.connection.execute(
-            "SELECT id FROM manga WHERE source=? AND source_id=?", (source, source_id)).fetchone()
+            "SELECT id,removed_at FROM manga WHERE source=? AND source_id=?", (source, source_id)).fetchone()
         if not record:
             return
         if self.connection.execute(
-                "SELECT 1 FROM tasks WHERE manga_id=? AND status='COMPLETED' LIMIT 1",
-                (record["id"],)).fetchone():
+                "SELECT 1 FROM tasks WHERE manga_id=? AND status='COMPLETED' "
+                "AND (? IS NULL OR created_at>?) LIMIT 1",
+                (record["id"], record["removed_at"], record["removed_at"])).fetchone():
             raise ValueError("该漫画已下载完成，拒绝重复下载，请前往漫画库阅读")
         active = self.connection.execute(
                 "SELECT * FROM tasks WHERE manga_id=? AND status NOT IN ('COMPLETED','FAILED','CANCELLED') LIMIT 1",
