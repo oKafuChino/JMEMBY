@@ -6,26 +6,24 @@ import math
 import time
 
 from jmemby.services.membership import MembershipService
+from jmemby.bot.completion import photo_caption, photo_file, read_cover
 
 
 logger = logging.getLogger(__name__)
 KEY = 'channel_push'
 
 
-def announcement_text(task, public_url):
+def announcement_text(task, public_url=''):
     manga = json.loads(task['snapshot'])
     authors = ', '.join(manga.get('authors', []))[:150] or '未知'
-    text = (f"📚 新漫画已入库\n标题：{str(manga['title'])[:300]}\n作者：{authors}\n"
-            f"漫画 ID：{str(manga['source_id'])[:50]}\n章节：{len(manga['chapters'])}\n"
-            f"入库编号：{task['id']}")
-    if public_url:
-        text += '\n阅读地址：' + public_url[:1000]
-    return text
+    return photo_caption(f"📚 新漫画已入库\n标题：{str(manga['title'])[:300]}\n作者：{authors}\n"
+                         f"漫画 ID：{str(manga['source_id'])[:50]}")
 
 
 class ChannelPushService:
-    def __init__(self, store, users, bot=None, public_url=''):
+    def __init__(self, store, users, bot=None, public_url='', storage_root=None):
         self.store, self.users, self.bot, self.public_url = store, users, bot, public_url
+        self.storage_root = storage_root
         self.save_lock, self.delivery_lock = asyncio.Lock(), asyncio.Lock()
 
     def config(self):
@@ -109,9 +107,22 @@ class ChannelPushService:
                 return
             task = {'id': notice['task_id'], 'snapshot': notice['snapshot']}
             try:
-                async with asyncio.timeout(15):
-                    result = await self.bot.send_message(notice['chat_id'], announcement_text(task, self.public_url),
-                                                         parse_mode=None, link_preview_options={'is_disabled': True})
+                cover = (await asyncio.to_thread(read_cover, self.storage_root, chapters[0]['path'])
+                         if self.storage_root else None)
+                # Cover extraction yields: disabling/changing the channel or removing
+                # this manga in the meantime must still cancel the pending delivery.
+                current = self.store.connection.execute(
+                    'SELECT status FROM channel_deliveries WHERE id=?', (notice['id'],)).fetchone()
+                if not current or current['status'] != 'PENDING':
+                    return
+                text = announcement_text(task)
+                async with asyncio.timeout(60):
+                    if cover:
+                        result = await self.bot.send_photo(notice['chat_id'], photo_file(cover),
+                                                           caption=text, parse_mode=None)
+                    else:
+                        result = await self.bot.send_message(notice['chat_id'], text, parse_mode=None,
+                                                             link_preview_options={'is_disabled': True})
                 self.store.connection.execute(
                     "UPDATE channel_deliveries SET status='SENT',sent_at=?,message_id=?,last_error=NULL WHERE id=?",
                     (time.time(), result.message_id, notice['id']))

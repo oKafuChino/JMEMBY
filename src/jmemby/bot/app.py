@@ -7,7 +7,7 @@ from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile, InputMediaPhoto
-from jmemby.bot.completion import completion_text, read_cover
+from jmemby.bot.completion import completion_text, photo_caption, photo_file, read_cover
 from html import escape
 from jmemby.bot.presentation import describe, describe_history, normalize, profile_text
 from jmemby.bot.access import chat_allows, jm_reply_options, parse_command
@@ -243,7 +243,14 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
                         lines.append("暂无点赞记录，使用 /like ID 为喜欢的漫画点赞")
                 if settings.komga_public_url:
                     lines.append("阅读地址：" + settings.komga_public_url)
-                await message.answer("\n\n".join(lines))
+                text = "\n\n".join(lines)
+                cover = None
+                if command == '/random' and item:
+                    cover = await asyncio.to_thread(read_cover, settings.storage_root, item['cover_path'])
+                if cover:
+                    await message.answer_photo(photo_file(cover), caption=photo_caption(text), parse_mode=None)
+                else:
+                    await message.answer(text, parse_mode=None)
             elif command == "/schedules" or command.startswith("/schedule_") or text == "⏰ 定时下载":
                 await message.answer("自动下载功能已移除。请发送漫画 ID 或链接，确认后手动下载。", reply_markup=menu(user_id))
             elif command.startswith("/") and command != "/jm":

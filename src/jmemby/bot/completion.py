@@ -5,7 +5,20 @@ from pathlib import Path
 import zipfile
 
 from PIL import Image
+from jmemby.domain.errors import JobError
 from jmemby.storage.cbz import contained
+
+
+def photo_caption(text):
+    """Fit a photo caption without splitting a UTF-16 surrogate pair."""
+    if len(text.encode('utf-16-le')) <= 2048:
+        return text
+    return text.encode('utf-16-le')[:2046].decode('utf-16-le', errors='ignore') + '…'
+
+
+def photo_file(content):
+    from aiogram.types import BufferedInputFile
+    return BufferedInputFile(content, filename='cover.jpg')
 
 
 def completion_text(task):
@@ -36,7 +49,17 @@ def read_cover(storage_root, relative_path):
                 return None
             picture.thumbnail((1280, 1280))
             output = io.BytesIO()
-            picture.convert("RGB").save(output, "JPEG", quality=85)
+            with picture.convert('RGB') as rgb:
+                # Telegram photos allow an aspect ratio of at most 20:1.
+                width, height = rgb.size
+                size = (max(width, (height + 19) // 20), max(height, (width + 19) // 20))
+                if size != rgb.size:
+                    with Image.new('RGB', size, 'white') as padded:
+                        padded.paste(rgb, ((size[0] - width) // 2, (size[1] - height) // 2))
+                        padded.save(output, 'JPEG', quality=85)
+                else:
+                    rgb.save(output, 'JPEG', quality=85)
             return output.getvalue()
-    except (OSError, ValueError, KeyError, StopIteration, zipfile.BadZipFile):
+    except (OSError, ValueError, TypeError, KeyError, StopIteration, zipfile.BadZipFile,
+            Image.DecompressionBombError, JobError):
         return None

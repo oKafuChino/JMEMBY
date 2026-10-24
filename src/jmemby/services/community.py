@@ -50,7 +50,9 @@ class CommunityService:
     def random(self, actor):
         self.users.require_member(actor)
         row = self.store.connection.execute(
-            'SELECT m.source_id,m.title,(SELECT COUNT(*) FROM manga_likes l WHERE l.manga_id=m.id) AS likes '
+            'SELECT m.source_id,m.title,(SELECT COUNT(*) FROM manga_likes l WHERE l.manga_id=m.id) AS likes, '
+            "(SELECT c.path FROM chapters c WHERE c.manga_id=m.id AND c.status='IMPORTED' "
+            'ORDER BY c.ordinal,c.id LIMIT 1) AS cover_path '
             "FROM manga m WHERE m.source='jmcomic' AND " + AVAILABLE + ' ORDER BY RANDOM() LIMIT 1').fetchone()
         return dict(row) if row else None
 

@@ -159,7 +159,9 @@ def handle(request, client):
     if operation == "metadata":
         album = at_stage("album_metadata", client.get_album_detail, request["id"])
         tags = []
-        for field in ("tags", "works", "characters"):
+        # JM exposes featured characters as actors; accept characters from older bridges.
+        # Put them first so the tag limit never lets generic tags crowd them out.
+        for field in ("actors", "characters", "works", "tags"):
             try:
                 values = normalize_tags(getattr(album, field, ()))
             except Exception:

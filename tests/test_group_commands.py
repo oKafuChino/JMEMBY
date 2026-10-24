@@ -136,13 +136,14 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.bot = Bot("123456:ABCdef123456")
         from jmemby.services.membership import MembershipService
         self.service.membership = MembershipService(self.store, self.users, self.bot)
-        self.settings = SimpleNamespace(komga_public_url='https://read.example.com')
+        self.settings = SimpleNamespace(komga_public_url='https://read.example.com', storage_root=self.directory.name)
         self.accounts = SimpleNamespace(get=lambda user_id: {'status':'READY','email':f'reader{user_id}@example.com'})
         self.dispatcher = create_dispatcher(self.service, self.settings, self.accounts, None)
         self.pending = self.message(None, user_id=123456, is_bot=True)
         self.pending = self.pending.model_copy(update={"message_id": 99})
         self.original_answer = Message.answer
         self.answer = self.start_patch(Message, "answer", return_value=self.pending)
+        self.answer_photo = self.start_patch(Message, 'answer_photo', return_value=self.pending)
         self.edit = self.start_patch(Message, "edit_text")
         self.delete = self.start_patch(Message, "delete")
         self.alert = self.start_patch(CallbackQuery, "answer")
@@ -364,6 +365,36 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue({'jm','my','report','like','random','rank'} <= private)
         self.assertFalse({'queue','status','cancel','retry','library'} & private)
         self.assertEqual([c.command for c in calls[2].args[0]],['jm'])
+
+    async def test_random_uploads_local_cover_and_caption(self):
+        import io
+        import zipfile
+        from PIL import Image
+        task = self.store.submit(manga(), 2, 2)
+        chapter = self.store.chapters(task['id'])[0]
+        path = Path(self.directory.name) / 'library' / chapter['path']
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = io.BytesIO()
+        Image.new('RGB', (80, 100)).save(data, 'PNG')
+        with zipfile.ZipFile(path, 'w') as archive:
+            archive.writestr('000001.png', data.getvalue())
+        self.store.update_chapter(chapter['id'], status='IMPORTED')
+        self.store.finish(task['id'], 'COMPLETED')
+        await self.send('/random', kind='private', chat_id=2)
+        self.answer.assert_not_awaited()
+        self.answer_photo.assert_awaited_once()
+        call = self.answer_photo.call_args
+        with Image.open(io.BytesIO(call.args[0].data)) as image:
+            self.assertEqual(image.format, 'JPEG')
+        self.assertIn('漫画 ID：42', call.kwargs['caption'])
+        self.assertIn('https://read.example.com', call.kwargs['caption'])
+        self.assertIsNone(call.kwargs['parse_mode'])
+        self.provider.get_manga.assert_not_awaited()
+
+    async def test_random_empty_library_remains_text_only(self):
+        await self.send('/random', kind='private', chat_id=2)
+        self.answer_photo.assert_not_awaited()
+        self.assertIn('暂无可推荐', self.answer.call_args.args[0])
 
     async def test_unregistered_blocked_anonymous_and_channel_senders_cannot_download(self):
         await self.send("/jm 42", user_id=3)

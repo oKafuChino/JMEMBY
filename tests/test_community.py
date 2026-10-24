@@ -43,6 +43,18 @@ class CommunityTests(unittest.IsolatedAsyncioTestCase):
         self.community=CommunityService(self.store,UserService(self.store,{1,9}))
         self.assertEqual(self.community.rank(2)[0]['likes'],2)
 
+    def test_random_cover_path_uses_first_imported_chapter(self):
+        manga = Manga('jmcomic', '42', 'Book', (), (
+            Chapter('54', 3, 'Third', ()), Chapter('52', 1, 'First', ()), Chapter('53', 2, 'Second', ())))
+        task = self.store.submit(manga, 2, 2)
+        chapters = self.store.chapters(task['id'])
+        for chapter in chapters:
+            self.store.update_chapter(chapter['id'], status='IMPORTED')
+        self.store.finish(task['id'], 'COMPLETED')
+        self.assertEqual(self.community.random(2)['cover_path'], chapters[0]['path'])
+        self.store.update_chapter(chapters[0]['id'], status='MISSING')
+        self.assertEqual(self.community.random(2)['cover_path'], chapters[1]['path'])
+
     def test_rank_top_ten_and_only_available_manga(self):
         self.assertEqual(self.community.rank(2),[])
         self.assertIsNone(self.community.random(2))

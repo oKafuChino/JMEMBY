@@ -44,7 +44,8 @@ async def run(settings, db_path, recent_logs):
     from jmemby.services.membership import MembershipService
     service.membership = MembershipService(store, users, bot)
     from jmemby.services.channel_push import ChannelPushService
-    service.channel_push = ChannelPushService(store, users, bot, settings.komga_public_url)
+    service.channel_push = ChannelPushService(store, users, bot, settings.komga_public_url,
+                                             storage_root=settings.storage_root)
     from jmemby.services.library import LibraryService
     service.library = LibraryService(store, users, settings.storage_root, komga, coordinator)
     from jmemby.services.community import CommunityService

@@ -1,4 +1,5 @@
 import asyncio
+import io
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -6,6 +7,10 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock
+from unittest.mock import patch
+import zipfile
+
+from PIL import Image
 
 from jmemby.db.store import Store
 from jmemby.domain.models import Chapter, Manga
@@ -26,6 +31,7 @@ class ChannelPushTests(unittest.IsolatedAsyncioTestCase):
         self.member = SimpleNamespace(status='administrator', can_post_messages=True)
         self.bot = SimpleNamespace(id=99, get_chat=AsyncMock(return_value=self.chat),
                                    get_chat_member=AsyncMock(return_value=self.member),
+                                   send_photo=AsyncMock(return_value=SimpleNamespace(message_id=56)),
                                    send_message=AsyncMock(return_value=SimpleNamespace(message_id=55)))
         self.service = ChannelPushService(self.store, self.users, self.bot, 'https://read.example.com')
         self.body = {'enabled': True, 'chat_id': '@updates', 'include_batch': False}
@@ -48,6 +54,69 @@ class ChannelPushTests(unittest.IsolatedAsyncioTestCase):
 
     def notices(self):
         return [dict(r) for r in self.store.connection.execute('SELECT * FROM channel_deliveries ORDER BY id')]
+
+    def cover(self, task):
+        chapter = self.store.chapters(task['id'])[0]
+        path = self.root / 'library' / chapter['path']
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stream = io.BytesIO()
+        Image.new('RGB', (100, 200), 'white').save(stream, 'PNG')
+        with zipfile.ZipFile(path, 'w') as archive:
+            archive.writestr('000001.png', stream.getvalue())
+        self.service.storage_root = self.root
+        return path
+
+    async def test_channel_uploads_local_cover_with_only_requested_caption_fields(self):
+        await self.service.save(1, self.body)
+        task = self.task()
+        self.cover(task)
+        with patch('jmemby.services.channel_push.photo_file', side_effect=lambda data: SimpleNamespace(data=data)):
+            await self.service.deliver_once()
+            await self.service.deliver_once()
+        self.bot.send_photo.assert_awaited_once()
+        self.bot.send_message.assert_not_awaited()
+        call = self.bot.send_photo.call_args
+        self.assertEqual(call.args[0], -1001)
+        with Image.open(io.BytesIO(call.args[1].data)) as cover:
+            self.assertEqual(cover.format, 'JPEG')
+            self.assertEqual(cover.size, (100, 200))
+        self.assertEqual(call.kwargs['caption'], '📚 新漫画已入库\n标题：Book <b>title</b>\n作者：Author\n漫画 ID：42')
+        self.assertIsNone(call.kwargs['parse_mode'])
+        self.assertEqual((self.notices()[0]['status'], self.notices()[0]['message_id']), ('SENT', 56))
+
+    async def test_photo_failure_retries_photo_without_sending_duplicate_text(self):
+        await self.service.save(1, self.body)
+        self.cover(self.task())
+        self.bot.send_photo.side_effect = RuntimeError('upload failed')
+        with patch('jmemby.services.channel_push.photo_file', side_effect=lambda data: SimpleNamespace(data=data)):
+            await self.service.deliver_once()
+            self.assertEqual(self.notices()[0]['status'], 'PENDING')
+            self.bot.send_message.assert_not_awaited()
+            self.bot.send_photo.side_effect = None
+            self.store.connection.execute('UPDATE channel_deliveries SET next_at=0')
+            await self.service.deliver_once()
+        self.assertEqual(self.notices()[0]['status'], 'SENT')
+        self.assertEqual(self.bot.send_photo.await_count, 2)
+
+    async def test_missing_cover_falls_back_to_same_short_text(self):
+        await self.service.save(1, self.body)
+        self.cover(self.task()).unlink()
+        await self.service.deliver_once()
+        self.bot.send_photo.assert_not_awaited()
+        self.bot.send_message.assert_awaited_once()
+        self.assertEqual(len(self.bot.send_message.call_args.args[1].splitlines()), 4)
+
+    async def test_disabling_during_cover_extraction_cancels_delivery(self):
+        await self.service.save(1, self.body)
+        self.cover(self.task())
+        async def extract(*args):
+            await self.service.save(1, {'enabled': False})
+            return b'cover'
+        with patch('jmemby.services.channel_push.asyncio.to_thread', side_effect=extract):
+            await self.service.deliver_once()
+        self.bot.send_photo.assert_not_awaited()
+        self.bot.send_message.assert_not_awaited()
+        self.assertEqual(self.notices()[0]['status'], 'SKIPPED')
 
     async def test_disabled_by_default_and_no_history_backfill(self):
         self.task()
@@ -72,8 +141,10 @@ class ChannelPushTests(unittest.IsolatedAsyncioTestCase):
         self.bot.send_message.assert_awaited_once()
         call = self.bot.send_message.call_args
         self.assertEqual(call.args[0], -1001)
-        for text in ('已入库', 'Book <b>title</b>', 'Author', '漫画 ID：42', '章节：1', 'https://read.example.com'):
+        for text in ('已入库', 'Book <b>title</b>', 'Author', '漫画 ID：42'):
             self.assertIn(text, call.args[1])
+        for text in ('章节：', '入库编号：', '阅读地址：', 'https://read.example.com'):
+            self.assertNotIn(text, call.args[1])
         self.assertNotIn('private_reader', call.args[1])
         self.assertIsNone(call.kwargs['parse_mode'])
         self.assertTrue(call.kwargs['link_preview_options']['is_disabled'])
@@ -241,4 +312,5 @@ class ChannelPushTests(unittest.IsolatedAsyncioTestCase):
         import json
         manga = Manga('jmcomic', '42', '😀'*2000, ('😀'*2000,), (Chapter('52', 1, 'C', ()),))
         text = announcement_text({'snapshot': json.dumps(asdict(manga)), 'id': 'a'*32}, 'https://read.test/'+'x'*3000)
-        self.assertLessEqual(len(text.encode('utf-16-le'))//2, 4096)
+        self.assertLessEqual(len(text.encode('utf-16-le'))//2, 1024)
+        self.assertEqual(len(text.splitlines()), 4)

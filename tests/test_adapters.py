@@ -80,9 +80,10 @@ class AdapterTests(unittest.TestCase):
         album.tags = ["冒险", " 冒险 ", "剧情", None]
         album.works = ["原作 & 外传", "冒险"]
         album.characters = ["人物甲", "人物甲"]
+        album.actors = ["出场人物", "人物甲"]
         with patch.object(client, "get_album_detail", return_value=album):
             self.assertEqual(handle({"operation": "metadata", "id": "42"}, client)["tags"],
-                             ["冒险", "剧情", "原作 & 外传", "人物甲"])
+                             ["出场人物", "人物甲", "原作 & 外传", "冒险", "剧情"])
 
     def test_unavailable_tag_field_preserves_works_and_characters(self):
         class Album(list):
@@ -92,7 +93,31 @@ class AdapterTests(unittest.TestCase):
             def tags(self):
                 raise ValueError("missing metadata")
         with patch.object(SDK, "get_album_detail", return_value=Album([Photo()])):
-            self.assertEqual(handle({"operation": "metadata", "id": "42"}, SDK())["tags"], ["原作", "人物"])
+            self.assertEqual(handle({"operation": "metadata", "id": "42"}, SDK())["tags"], ["人物", "原作"])
+
+    def test_actor_tags_survive_generic_tag_limit_and_missing_alias(self):
+        class Album(list):
+            name, authors = 'Book', []
+            actors = [' 优香 ', '优香', None]
+            works = ['蔚蓝档案']
+            tags = [f'tag-{i}' for i in range(100)]
+            @property
+            def characters(self):
+                raise AttributeError('not supported')
+        with patch.object(SDK, 'get_album_detail', return_value=Album([Photo()])):
+            tags = handle({'operation': 'metadata', 'id': '42'}, SDK())['tags']
+        self.assertEqual(tags[:2], ['优香', '蔚蓝档案'])
+        self.assertEqual(len(tags), 100)
+
+    def test_missing_actors_still_returns_other_tags(self):
+        class Album(list):
+            name, authors = 'Book', []
+            works, tags = ['原作'], ['剧情']
+            @property
+            def actors(self):
+                raise ValueError('unavailable')
+        with patch.object(SDK, 'get_album_detail', return_value=Album([Photo()])):
+            self.assertEqual(handle({'operation': 'metadata', 'id': '42'}, SDK())['tags'], ['原作', '剧情'])
 
     def test_disk_full_sdk_error_is_not_retried_as_network(self):
         import errno
