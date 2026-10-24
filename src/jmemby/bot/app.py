@@ -42,6 +42,8 @@ class Authorization(BaseMiddleware):
         public = not callback and command in {"/start", "/help", "/register", "/me"}
         if not public:
             try:
+                if command in {"/kk", "/white"}:
+                    self.users.require_admin(user.id)
                 self.users.require_member(user.id)
             except ValueError as exc:
                 if isinstance(event, CallbackQuery):
@@ -49,7 +51,7 @@ class Authorization(BaseMiddleware):
                 else:
                     text = str(exc)
                     if chat.type in {"group", "supergroup"}:
-                        text += "\n注册和账号管理请私聊机器人，群聊仅支持 /jm。"
+                        text += "\n注册和账号管理请私聊机器人；群聊下载使用 /jm。"
                     await event.answer(text)
                 return
         return await handler(event, data)
@@ -93,7 +95,17 @@ def create_dispatcher(service, settings, accounts, diagnostics):
         user_id = message.from_user.id
         pending = None
         try:
-            if command in {"/start", "/help"}:
+            if command in {"/kk", "/white"}:
+                users.require_admin(user_id)
+                reply = message.reply_to_message
+                target = getattr(reply, "from_user", None)
+                if (message.chat.type not in {"group", "supergroup"} or argument
+                        or not reply or reply.chat.id != message.chat.id or not target
+                        or target.is_bot or reply.sender_chat or reply.forward_origin):
+                    raise ValueError(f"请在群聊中直接回复目标用户本人发送的消息使用 {command}，不要附带参数或回复转发消息")
+                result = users.grant(user_id, target.id, white=command == "/white")
+                await message.answer(f"✅ 用户 {target.id}：{result}。\n用户组：{users.group_label(target.id)}\n未注册用户请私聊机器人发送 /register；阅读账号只在私聊领取。")
+            elif command in {"/start", "/help"}:
                 help_text = "📚 欢迎使用 JMEMBY\n\n① 注册账号 → ② 发送漫画 ID → ③ 确认下载\n\n/register [邀请码] 注册\n/account 领取或补开阅读账号\n/me 我的信息\n/queue 我的任务\n/status 任务ID 查看进度\n/cancel 任务ID 取消任务\n/retry 任务ID 重试\n/library 开始阅读"
                 if users.invite_required():
                     help_text += "\n当前为邀请注册：请向管理员获取邀请码"
@@ -101,7 +113,8 @@ def create_dispatcher(service, settings, accounts, diagnostics):
                     help_text += "\n/status 服务状态\n/logs 最近 100 条应用日志"
                     help_text += "\n管理员：/admin /users [页码]\n/registration on|off\n/ban 用户ID /unban 用户ID\n/disk 磁盘状态"
                     help_text += "\n/invite_mode on|off\n/invite_create [次数]\n/invites [页码]\n/invite_revoke 编号"
-                help_text += "\n/jm ID或链接 查询并确认下载\n群聊仅支持 /jm；请先在私聊注册。"
+                    help_text += "\n群聊回复用户：/kk 授予注册资格，/white 设为白名单"
+                help_text += "\n/jm ID或链接 查询并确认下载\n群聊普通用户仅支持 /jm；请先在私聊注册。"
                 await message.answer(help_text, reply_markup=menu(user_id))
             elif command == "/register":
                 result = users.register(user_id, message.from_user.username, message.from_user.full_name, argument.strip())
@@ -115,6 +128,7 @@ def create_dispatcher(service, settings, accounts, diagnostics):
                 status = "管理员" if users.is_admin(user_id) else "未注册" if not account else "已禁用" if account["blocked"] else "已注册"
                 reading = accounts.get(user_id)
                 reading_status = "已开通" if reading and reading["status"] == "READY" else "待开通"
+                status += f"；组别：{users.group_label(user_id)}"
                 await message.answer(f"👤 我的账号\n\n用户 ID：{user_id}\nBot 状态：{status}\n阅读账号：{reading_status}\n\n点击「🔑 阅读账号」领取或重试开通。", reply_markup=menu(user_id))
             elif command == "/admin":
                 stats = users.statistics(user_id)
@@ -128,7 +142,7 @@ def create_dispatcher(service, settings, accounts, diagnostics):
                     reply_markup=menu(user_id))
             elif command == "/users":
                 members = users.list_users(user_id, int(argument or "1"))
-                lines = [f"{u['user_id']} | @{u['username'] or '-'} | {'禁用' if u['blocked'] else '正常'}" for u in members]
+                lines = [f"{u['user_id']} | @{u['username'] or '-'} | {users.group_label(u['user_id'])} | {'禁用' if u['blocked'] else '正常'}" for u in members]
                 await message.answer("\n".join(lines) or "本页暂无注册用户")
             elif command == "/registration":
                 users.require_admin(user_id)

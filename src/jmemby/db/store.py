@@ -124,7 +124,24 @@ class Store:
                 self.connection.close()
                 raise
             version = 6
-        if version != 6:
+        if version == 6:
+            try:
+                self.connection.executescript("""
+                    BEGIN IMMEDIATE;
+                    ALTER TABLE users ADD COLUMN user_group TEXT NOT NULL DEFAULT 'normal'
+                        CHECK(user_group IN ('normal','white'));
+                    CREATE TABLE registration_grants (
+                        user_id INTEGER PRIMARY KEY,
+                        user_group TEXT NOT NULL CHECK(user_group IN ('normal','white')),
+                        granted_by INTEGER NOT NULL, granted_at REAL NOT NULL);
+                    PRAGMA user_version=7;
+                    COMMIT;
+                """)
+            except BaseException:
+                self.connection.close()
+                raise
+            version = 7
+        if version != 7:
             self.connection.close()
             raise RuntimeError("Unsupported database version; restore or migrate before startup")
 

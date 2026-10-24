@@ -20,6 +20,30 @@ class UserService:
         if not self.is_admin(user_id):
             raise ValueError("此功能仅管理员可用")
 
+    def grant(self, actor, target, white=False):
+        self.require_admin(actor)
+        if target <= 0 or self.is_admin(target):
+            raise ValueError("只能授权普通用户，不能修改管理员组别")
+        with self.store.transaction() as db:
+            existing = self.get(target)
+            if existing and existing["blocked"]:
+                raise ValueError("该用户已被禁用，请先在私聊使用 /unban 解禁")
+            db.execute("INSERT INTO registration_grants(user_id,user_group,granted_by,granted_at) VALUES (?,?,?,?) "
+                       "ON CONFLICT(user_id) DO UPDATE SET "
+                       "user_group=CASE WHEN excluded.user_group='white' THEN 'white' ELSE registration_grants.user_group END,"
+                       "granted_by=excluded.granted_by,granted_at=excluded.granted_at",
+                       (target, "white" if white else "normal", actor, time.time()))
+            if existing and white:
+                db.execute("UPDATE users SET user_group='white' WHERE user_id=?", (target,))
+        return "已设为白名单组" if white else "已给予注册资格（保留已有组别）"
+
+    def group_label(self, user_id):
+        if self.is_admin(user_id):
+            return "管理员"
+        record = self.get(user_id) or self.store.connection.execute(
+            "SELECT user_group FROM registration_grants WHERE user_id=?", (user_id,)).fetchone()
+        return "白名单" if record and record["user_group"] == "white" else "普通"
+
     def require_member(self, user_id):
         if self.is_admin(user_id):
             return
@@ -73,7 +97,8 @@ class UserService:
                 return "你已注册，可以直接发送漫画 ID"
             if not self.registration_open():
                 raise ValueError("管理员已关闭新用户注册")
-            if self.invite_required():
+            grant = db.execute("SELECT user_group FROM registration_grants WHERE user_id=?", (user_id,)).fetchone()
+            if self.invite_required() and not grant:
                 code = invite_code.strip()
                 if not code:
                     raise ValueError("当前为邀请注册，请发送 /register 邀请码")
@@ -84,8 +109,9 @@ class UserService:
                     (hashlib.sha256(code.encode()).hexdigest(),))
                 if updated.rowcount != 1:
                     raise ValueError("邀请码无效、已撤销或使用次数已耗尽")
-            db.execute("INSERT INTO users(user_id,username,display_name,registered_at) VALUES (?,?,?,?)",
-                       (user_id, (username or "")[:64], (display_name or "")[:128], time.time()))
+            db.execute("INSERT INTO users(user_id,username,display_name,registered_at,user_group) VALUES (?,?,?,?,?)",
+                       (user_id, (username or "")[:64], (display_name or "")[:128], time.time(),
+                        grant["user_group"] if grant else "normal"))
         return "注册成功！发送漫画 ID 或 /help 开始使用"
 
     def set_registration(self, actor, enabled):

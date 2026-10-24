@@ -10,7 +10,7 @@ def parse_command(text):
 
 def chat_allows(chat_type, chat_id, user_id, command="", action=None):
     if chat_type == "private":
-        return chat_id == user_id
+        return chat_id == user_id and command not in {"/kk", "/white"}
     if chat_type in {"group", "supergroup"}:
-        return action in {"confirm", "dismiss"} if action is not None else command == "/jm"
+        return action in {"confirm", "dismiss"} if action is not None else command in {"/jm", "/kk", "/white"}
     return False

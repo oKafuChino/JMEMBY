@@ -41,6 +41,8 @@ docker compose logs --tail 100 app
 
 ## 备份和恢复
 
+当前用户组功能将数据库升级到 schema 7：新增普通/白名单组别及注册资格记录。更新前备份数据库，执行 `docker compose up -d --build --no-deps app` 后自动迁移。旧用户默认普通组。管理员在群中回复用户消息验证 `/kk`、`/white`，并检查普通用户无法授权、私聊无法执行这两个命令。具体规则见 [注册与用户组](REGISTRATION.md)。
+
 应用数据库使用 SQLite 在线备份，目标文件必须不存在：
 
 ```sh

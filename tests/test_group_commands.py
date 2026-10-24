@@ -146,10 +146,33 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.store.close()
         self.directory.cleanup()
 
-    def message(self, text, chat_id=-100, kind="supergroup", user_id=2, is_bot=False, sender_chat=None):
+    def message(self, text, chat_id=-100, kind="supergroup", user_id=2, is_bot=False, sender_chat=None, reply_to_message=None):
         return Message(message_id=10, date=datetime.now(timezone.utc), text=text,
                        from_user=User(id=user_id, is_bot=is_bot, first_name="Test"),
-                       chat=Chat(id=chat_id, type=kind), sender_chat=sender_chat)
+                       chat=Chat(id=chat_id, type=kind), sender_chat=sender_chat, reply_to_message=reply_to_message)
+
+    async def test_group_admin_grants_and_private_commands_are_ignored(self):
+        target = self.message("hello", user_id=3)
+        await self.send("/kk", user_id=1, reply_to_message=target)
+        self.assertIsNone(self.users.get(3))
+        self.users.set_invite_required(1, True)
+        self.users.register(3)
+        self.assertEqual(self.users.group_label(3), "普通")
+        await self.send("/white@TestBot", user_id=1, reply_to_message=target)
+        self.assertEqual(self.users.group_label(3), "白名单")
+        self.answer.reset_mock()
+        await self.send("/white", user_id=1, kind="private", chat_id=1, reply_to_message=target)
+        self.answer.assert_not_awaited()
+
+    async def test_grants_reject_nonadmin_missing_reply_bot_and_anonymous_target(self):
+        target = self.message("hello", user_id=3)
+        await self.send("/white", user_id=2, reply_to_message=target)
+        for reply in (None, self.message(None, user_id=3, is_bot=True),
+                      self.message(None, user_id=3, sender_chat=Chat(id=-100, type="supergroup"))):
+            await self.send("/kk", user_id=1, reply_to_message=reply)
+        await self.send("/kk 3", user_id=1, reply_to_message=target)
+        await self.send("/white@OtherBot", user_id=1, reply_to_message=target)
+        self.assertEqual(self.store.connection.execute("SELECT COUNT(*) FROM registration_grants").fetchone()[0], 0)
 
     async def send(self, text, **kwargs):
         message = self.message(text, **kwargs)
