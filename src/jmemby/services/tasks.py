@@ -45,6 +45,31 @@ class TaskService:
         self.users.require_admin(user_id)
         return self.store.recent_downloads(query)
 
+    def queue_page(self, actor, page=1, queue='all'):
+        if not self.users:
+            raise ValueError('此功能仅管理员可用')
+        self.users.require_admin(actor)
+        if type(page) is not int or not 1 <= page <= 1000000:
+            raise ValueError('页码无效')
+        if queue not in ('all', 'normal', 'white'):
+            raise ValueError('队列无效')
+        where, params = ('', ()) if queue == 'all' else (' WHERE t.priority=?', (int(queue == 'white'),))
+        rows = self.store.connection.execute(
+            'SELECT t.id,m.title,m.source_id,t.user_id,t.status,t.priority,t.progress,t.created_at,'
+            't.assigned_node_id,t.assigned_node_label FROM tasks t JOIN manga m ON m.id=t.manga_id' + where +
+            ' ORDER BY t.created_at DESC,t.id DESC LIMIT 20 OFFSET ?', (*params, (page-1)*20)).fetchall()
+        coordinator = getattr(self, 'download_coordinator', None)
+        current = {a['task']['task_id']: {'id': a['id'], 'label': a['label']}
+                   for a in coordinator.snapshot()['agents'] if a.get('task')} if coordinator else {}
+        result = []
+        for row in rows:
+            task = dict(row)
+            node_id, label = task.pop('assigned_node_id'), task.pop('assigned_node_label')
+            task['node'] = current.get(task['id']) or ({'id': node_id, 'label': label or node_id} if node_id else None)
+            task['node_current'] = task['id'] in current
+            result.append(task)
+        return result
+
     def download_history(self, reference, user_id, page=1):
         if not self.users:
             raise ValueError("此功能仅管理员可用")

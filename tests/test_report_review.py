@@ -97,7 +97,7 @@ class ReportReviewTests(unittest.IsolatedAsyncioTestCase):
 
     def test_schema_twelve_upgrade_preserves_reports_and_old_task_delivery(self):
         self.store.connection.executescript('''
-            ALTER TABLE tasks DROP COLUMN notify_telegram;
+            DROP INDEX task_created_order; ALTER TABLE tasks DROP COLUMN assigned_node_id; ALTER TABLE tasks DROP COLUMN assigned_node_label; ALTER TABLE tasks DROP COLUMN notify_telegram;
             DROP INDEX review_reports;
             ALTER TABLE manga_reports DROP COLUMN status;
             ALTER TABLE manga_reports DROP COLUMN handled_by;
@@ -106,7 +106,7 @@ class ReportReviewTests(unittest.IsolatedAsyncioTestCase):
         ''')
         self.store.close();self.store=Store(self.path)
         self.community=CommunityService(self.store,UserService(self.store,{1,9}))
-        self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0],13)
+        self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0],14)
         self.assertEqual(self.community.review_list(1)['pending'],2)
         self.assertEqual(self.store.get(self.task['id'])['notify_telegram'],1)
         self.assertEqual(len(self.store.notifications()),1)

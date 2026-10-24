@@ -145,9 +145,9 @@ class CommunityTests(unittest.IsolatedAsyncioTestCase):
     def test_schema_eleven_migration_preserves_history_and_removal_marker(self):
         _,task=self.book()
         self.store.connection.execute('UPDATE manga SET removed_at=123 WHERE id=?',(task['manga_id'],))
-        self.store.connection.executescript('ALTER TABLE tasks DROP COLUMN notify_telegram; DROP TABLE report_deliveries; DROP TABLE manga_reports; DROP TABLE manga_likes; PRAGMA user_version=11;')
+        self.store.connection.executescript('DROP INDEX task_created_order; ALTER TABLE tasks DROP COLUMN assigned_node_id; ALTER TABLE tasks DROP COLUMN assigned_node_label; ALTER TABLE tasks DROP COLUMN notify_telegram; DROP TABLE report_deliveries; DROP TABLE manga_reports; DROP TABLE manga_likes; PRAGMA user_version=11;')
         self.store.close();self.store=Store(self.path)
-        self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0],13)
+        self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0],14)
         self.assertEqual(self.store.get(task['id'])['user_id'],2)
         self.assertEqual(self.store.connection.execute('SELECT removed_at FROM manga').fetchone()[0],123)
         self.store.close();self.store=Store(self.path)

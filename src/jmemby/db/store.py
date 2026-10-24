@@ -243,7 +243,21 @@ class Store:
                 self.connection.close()
                 raise
             version = 13
-        if version != 13:
+        if version == 13:
+            try:
+                self.connection.executescript("""
+                    BEGIN IMMEDIATE;
+                    ALTER TABLE tasks ADD COLUMN assigned_node_id TEXT;
+                    ALTER TABLE tasks ADD COLUMN assigned_node_label TEXT;
+                    CREATE INDEX task_created_order ON tasks(created_at DESC,id DESC);
+                    PRAGMA user_version=14;
+                    COMMIT;
+                """)
+            except BaseException:
+                self.connection.close()
+                raise
+            version = 14
+        if version != 14:
             self.connection.close()
             raise RuntimeError("Unsupported database version; restore or migrate before startup")
 
@@ -329,7 +343,7 @@ class Store:
 
     def update(self, task_id, **fields):
         allowed = {"status", "phase", "attempts", "next_at", "cancel_requested", "error_code",
-                   "error", "progress", "message_id"}
+                   "error", "progress", "message_id", "assigned_node_id", "assigned_node_label"}
         if not fields or not fields.keys() <= allowed:
             raise ValueError("invalid task fields")
         fields["updated_at"] = time.time()

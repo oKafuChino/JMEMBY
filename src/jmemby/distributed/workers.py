@@ -35,6 +35,10 @@ class AgentWorker(Worker):
         self.node_revision = self.coordinator.revision(self.agent)
         self.coordinator.assign(self.agent, task, decode_manga(task['snapshot']))
         try:
+            registry = self.coordinator.registry
+            label = registry.get(self.agent)['label'] if registry else self.agent
+            # Keep the latest execution node after release, completion and master restarts.
+            self.store.update(task['id'], assigned_node_id=self.agent, assigned_node_label=label)
             await super().execute(task)
         finally:
             self.coordinator.unassign(self.agent)

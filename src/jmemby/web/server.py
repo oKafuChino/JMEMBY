@@ -152,19 +152,7 @@ def create_app(service, auth, settings):
         return web.json_response(rows)
 
     async def tasks(request):
-        queue = request.query.get('queue', 'all')
-        if queue not in {'all', 'normal', 'white'}:
-            raise ValueError('队列无效')
-        where = '' if queue == 'all' else ' WHERE t.priority=' + ('1' if queue == 'white' else '0')
-        rows = store.connection.execute(
-            'SELECT t.id,m.title,m.source_id,t.user_id,t.status,t.priority,t.progress,t.created_at '
-            'FROM tasks t JOIN manga m ON m.id=t.manga_id' + where +
-            " ORDER BY CASE WHEN t.status IN ('COMPLETED','FAILED','CANCELLED') THEN 1 ELSE 0 END,t.priority DESC,t.queue_sequence LIMIT 20 OFFSET ?",
-            ((page_number(request) - 1) * 20,)).fetchall()
-        coordinator = getattr(service, 'download_coordinator', None)
-        assignments = {a['task']['task_id']: {'id': a['id'], 'label': a['label']}
-                       for a in coordinator.snapshot()['agents'] if a.get('task')} if coordinator else {}
-        return web.json_response([{**dict(r), 'node': assignments.get(r['id'])} for r in rows])
+        return web.json_response(service.queue_page(request['admin'], page_number(request), request.query.get('queue', 'all')))
 
     async def history(request):
         rows = service.recent_downloads(request['admin'], request.query.get('q', ''))
