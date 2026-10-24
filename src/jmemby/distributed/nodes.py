@@ -7,6 +7,8 @@ import secrets
 import time
 from urllib.parse import urlsplit
 
+_UNSET = object()
+
 
 def digest(value):
     return hashlib.sha256(value.encode('utf-8')).hexdigest()
@@ -85,31 +87,35 @@ class NodeRegistry:
         return value
 
     @staticmethod
-    def validate_fields(label, concurrency):
+    def validate_fields(label, concurrency, queue_scope='all'):
         if not isinstance(label, str) or not label.strip() or len(label) > 64 or any(ord(c) < 32 for c in label):
             raise ValueError('节点名称需为 1–64 个可见字符')
         if type(concurrency) is not int or not 1 <= concurrency <= 16:
             raise ValueError('图片并发需为 1–16 的整数')
+        if queue_scope not in ('all', 'normal', 'white'):
+            raise ValueError('服务队列只能选择两者、普通队列或白名单队列')
 
-    def create(self, name, label, concurrency):
+    def create(self, name, label, concurrency, queue_scope='all'):
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,48}', name):
             raise ValueError('节点 ID 仅支持 1–48 位字母、数字、下划线或短横线')
-        self.validate_fields(label, concurrency)
+        self.validate_fields(label, concurrency, queue_scope)
         with self.store.transaction() as db:
             if db.execute('SELECT 1 FROM download_nodes WHERE id=? AND deleted=0', (name,)).fetchone():
                 raise ValueError('节点 ID 已存在')
             if db.execute('SELECT COUNT(*) FROM download_nodes WHERE deleted=0').fetchone()[0] >= 32:
                 raise ValueError('最多支持 32 个下载节点')
-            db.execute('INSERT INTO download_nodes(id,label,concurrency,created_at,updated_at) VALUES (?,?,?,?,?) '
-                       "ON CONFLICT(id) DO UPDATE SET label=excluded.label,concurrency=excluded.concurrency,"
+            db.execute('INSERT INTO download_nodes(id,label,concurrency,queue_scope,created_at,updated_at) VALUES (?,?,?,?,?,?) '
+                       "ON CONFLICT(id) DO UPDATE SET label=excluded.label,concurrency=excluded.concurrency,queue_scope=excluded.queue_scope,"
                        "token_hash='',enabled=1,deleted=0,revision=revision+1,ticket_hash=NULL,ticket_expires=NULL,"
-                       'updated_at=excluded.updated_at', (name, label.strip(), concurrency, self.clock(), self.clock()))
+                       'updated_at=excluded.updated_at', (name, label.strip(), concurrency, queue_scope, self.clock(), self.clock()))
 
-    def update(self, name, label, concurrency):
-        self.get(name)
-        self.validate_fields(label, concurrency)
-        self.store.connection.execute('UPDATE download_nodes SET label=?,concurrency=?,updated_at=? WHERE id=?',
-                                      (label.strip(), concurrency, self.clock(), name))
+    def update(self, name, label, concurrency, queue_scope=_UNSET):
+        node = self.get(name)
+        if queue_scope is _UNSET:
+            queue_scope = node['queue_scope']
+        self.validate_fields(label, concurrency, queue_scope)
+        self.store.connection.execute('UPDATE download_nodes SET label=?,concurrency=?,queue_scope=?,updated_at=? WHERE id=?',
+                                      (label.strip(), concurrency, queue_scope, self.clock(), name))
 
     def set_enabled(self, name, enabled):
         self.get(name)
@@ -152,5 +158,5 @@ class NodeRegistry:
 
     def public(self, name):
         row = self.get(name)
-        return {**{key: row[key] for key in ('id', 'label', 'enabled', 'concurrency', 'created_at', 'updated_at')},
+        return {**{key: row[key] for key in ('id', 'label', 'enabled', 'concurrency', 'queue_scope', 'created_at', 'updated_at')},
                 'registered': bool(row['token_hash'])}

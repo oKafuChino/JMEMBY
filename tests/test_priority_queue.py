@@ -114,7 +114,7 @@ class PriorityTests(unittest.IsolatedAsyncioTestCase):
         self.store = Store(self.path)
         self.assertEqual(self.store.get(normal['id'])['priority'], 0)
         self.assertEqual(self.store.get(white['id'])['priority'], 1)
-        self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0], 9)
+        self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0], 10)
         self.store.close()
         self.store = Store(self.path)
         self.assertEqual(self.store.next_task()['id'], white['id'])

@@ -135,7 +135,7 @@ class NodeTests(unittest.TestCase):
         self.store.connection.executescript('DROP TABLE download_nodes; PRAGMA user_version=8;')
         self.store.close()
         self.store = Store(self.path)
-        self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0],9)
+        self.assertEqual(self.store.connection.execute('PRAGMA user_version').fetchone()[0],10)
         self.assertEqual(NodeRegistry(self.store).origin(),'https://agents.example.com')
         self.store.close()
         self.store = Store(self.path)
@@ -298,7 +298,7 @@ class NodeHttpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await client.get('/api/nodes')).status,401)
             token=auth.login(auth.issue(1))
             headers={'Cookie':'session='+token,'Origin':settings.web_public_url}
-            create={'action':'create','id':'vps-2','label':'New','concurrency':3}
+            create={'action':'create','id':'vps-2','label':'New','concurrency':3,'queue_scope':'normal'}
             self.assertEqual((await client.post('/api/nodes',json=create,headers=headers)).status,403)
             headers['X-CSRF-Token']=auth.authenticate(token)['csrf']
             self.assertEqual((await client.post('/api/nodes',json=create,headers=headers)).status,201)
@@ -306,6 +306,20 @@ class NodeHttpTests(unittest.IsolatedAsyncioTestCase):
             data=await response.json()
             self.assertEqual(len(data['agents']),2)
             self.assertNotIn('ticket_hash',json.dumps(data))
+            self.assertEqual(next(a for a in data['agents'] if a['id']=='vps-2')['queue_scope'],'normal')
+            self.assertEqual(next(a for a in data['agents'] if a['id']=='vps-1')['queue_scope'],'all')
+            update={**create,'action':'update','queue_scope':'white'}
+            revision=self.registry.get('vps-2')['revision']
+            self.assertEqual((await client.post('/api/nodes',json=update,headers=headers)).status,200)
+            update.pop('queue_scope')
+            self.assertEqual((await client.post('/api/nodes',json=update,headers=headers)).status,200)
+            for invalid in (None,'both',[],True):
+                self.assertEqual((await client.post('/api/nodes',json={**update,'queue_scope':invalid},headers=headers)).status,400)
+                self.assertEqual((await client.post('/api/nodes',json={**create,'id':'bad-scope','queue_scope':invalid},headers=headers)).status,400)
+            self.assertNotIn('bad-scope',self.registry.ids())
+            data=await (await client.get('/api/nodes',headers=headers)).json()
+            self.assertEqual(next(a for a in data['agents'] if a['id']=='vps-2')['queue_scope'],'white')
+            self.assertEqual(self.registry.get('vps-2')['revision'],revision)
             self.coordinator.books['vps-2']={}
             self.assertEqual((await client.post('/api/nodes',json={'action':'delete','id':'vps-2'},headers=headers)).status,400)
             self.coordinator.books.pop('vps-2')

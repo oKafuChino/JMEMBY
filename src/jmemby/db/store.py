@@ -175,7 +175,20 @@ class Store:
                 self.connection.close()
                 raise
             version = 9
-        if version != 9:
+        if version == 9:
+            try:
+                self.connection.executescript("""
+                    BEGIN IMMEDIATE;
+                    ALTER TABLE download_nodes ADD COLUMN queue_scope TEXT NOT NULL DEFAULT 'all'
+                        CHECK(queue_scope IN ('all','normal','white'));
+                    PRAGMA user_version=10;
+                    COMMIT;
+                """)
+            except BaseException:
+                self.connection.close()
+                raise
+            version = 10
+        if version != 10:
             self.connection.close()
             raise RuntimeError("Unsupported database version; restore or migrate before startup")
 
@@ -391,14 +404,18 @@ class Store:
     def recover(self):
         self.connection.execute("UPDATE tasks SET status='QUEUED' WHERE status IN ('DOWNLOADING','PACKAGING','IMPORT_PENDING')")
 
-    def next_task(self, exclude=()):
+    def next_task(self, exclude=(), queue_scope='all'):
+        if queue_scope not in ('all', 'normal', 'white'):
+            raise ValueError('节点服务队列无效')
         # Active cancellations still belong to the worker that is unwinding.
         excluded = tuple(exclude)
         exclusion = ' AND id NOT IN (' + ','.join('?' for _ in excluded) + ')' if excluded else ''
+        selection = '' if queue_scope == 'all' else ' AND priority=?'
+        priorities = () if queue_scope == 'all' else (int(queue_scope == 'white'),)
         with self.transaction() as db:
             row = db.execute("SELECT * FROM tasks WHERE status IN ('QUEUED','RETRY_WAIT','CANCEL_REQUESTED') "
-                             "AND (next_at<=? OR cancel_requested=1)" + exclusion +
-                             " ORDER BY priority DESC,queue_sequence LIMIT 1", (time.time(), *excluded)).fetchone()
+                             "AND (next_at<=? OR cancel_requested=1)" + exclusion + selection +
+                             " ORDER BY priority DESC,queue_sequence LIMIT 1", (time.time(), *excluded, *priorities)).fetchone()
             if row:
                 self.update(row["id"], status="DOWNLOADING")
                 return self.get(row["id"])

@@ -318,6 +318,40 @@ class PoolTests(unittest.IsolatedAsyncioTestCase):
                 runner.cancel()
                 await asyncio.gather(runner, return_exceptions=True)
 
+    async def test_queue_restrictions_and_live_edit_finish_active_book(self):
+        from jmemby.distributed.nodes import NodeRegistry
+        self.coordinator.registry=NodeRegistry(self.store,TOKENS)
+        registry=self.coordinator.registry
+        registry.update('vps-1','Normal',2,'normal')
+        registry.update('vps-2','White',2,'white')
+        users=UserService(self.store,{1});users.register(2);users.grant(1,3,True);users.register(3)
+        normal=self.store.submit(manga(1),2,-100)
+        white=self.store.submit(manga(2),3,-100)
+        next_white=self.store.submit(manga(3),3,-100)
+        next_normal=self.store.submit(manga(4),2,-100)
+        for name in TOKENS:self.coordinator.touch(name)
+        first=asyncio.create_task(self.pool.workers[0].run_once())
+        second=asyncio.create_task(self.pool.workers[1].run_once())
+        try:
+            async with asyncio.timeout(2):
+                while len(self.coordinator.books)!=2:await asyncio.sleep(0.01)
+            revision=registry.get('vps-1')['revision']
+            registry.update('vps-1','Now white',2,'white')
+            self.assertEqual(registry.get('vps-1')['revision'],revision)
+            result=await asyncio.wait_for(asyncio.gather(
+                self.pump('vps-1',first,FakeProvider()),self.pump('vps-2',second,FakeProvider())),10)
+            await asyncio.gather(first,second)
+            self.assertEqual(result,[['1','1'],['2','2']])
+            self.assertEqual(self.store.get(normal['id'])['status'],'COMPLETED')
+            self.assertEqual(self.store.get(white['id'])['status'],'COMPLETED')
+            self.assertEqual(self.pool.workers[0].claim_task()['id'],next_white['id'])
+            self.assertIsNone(self.pool.workers[1].claim_task())
+            self.assertEqual(self.store.get(next_normal['id'])['status'],'QUEUED')
+            self.assertEqual(self.store.get(next_normal['id'])['attempts'],0)
+        finally:
+            for task in (first,second):task.cancel()
+            await asyncio.gather(first,second,return_exceptions=True)
+
     async def test_cancellation_cannot_be_claimed_by_second_worker(self):
         first = self.store.submit(manga(1), 1, 1)
         second = self.store.submit(manga(2), 1, 1)

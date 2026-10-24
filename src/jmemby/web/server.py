@@ -120,7 +120,7 @@ def create_app(service, auth, settings):
         if operation == 'create':
             if not registry.origin():
                 raise ValueError('请先保存 Agent HTTPS 地址')
-            registry.create(name, data.get('label'), data.get('concurrency'))
+            registry.create(name, data.get('label'), data.get('concurrency'), data.get('queue_scope', 'all'))
             return web.json_response(registry.issue(name), status=201)
         if not isinstance(name, str):
             raise ValueError('节点 ID 无效')
@@ -129,7 +129,8 @@ def create_app(service, auth, settings):
         if operation == 'test':
             return web.json_response(await coordinator.test_connection(name))
         if operation == 'update':
-            registry.update(name, data.get('label'), data.get('concurrency'))
+            registry.update(name, data.get('label'), data.get('concurrency'),
+                            data.get('queue_scope', registry.get(name)['queue_scope']))
         elif operation == 'enabled':
             registry.set_enabled(name, data.get('enabled'))
             coordinator.invalidate(name)

@@ -19,6 +19,12 @@ class AgentWorker(Worker):
         if self.current_task:
             self.store.update(self.current_task, progress=text)
 
+    def claim_task(self):
+        registry = self.coordinator.registry
+        # Read on every claim: edits affect the next manga, never the active one.
+        scope = registry.get(self.agent)['queue_scope'] if registry else 'all'
+        return self.store.next_task(exclude=self.active_tasks, queue_scope=scope)
+
     def check(self, task_id):
         super().check(task_id)
         if not self.coordinator.enabled(self.agent) or self.coordinator.revision(self.agent) != self.node_revision:

@@ -47,11 +47,14 @@ class Worker:
                 operation.cancel()
             await asyncio.gather(operation, return_exceptions=True)
 
+    def claim_task(self):
+        return self.store.next_task(exclude=self.active_tasks)
+
     async def run_once(self):
         self.heartbeat = time.monotonic()
         if not self.settings.disk_space_check_enabled or shutil.disk_usage(self.root).free >= self.settings.resume_free_space_gb * 1024**3:
             self.store.resume_disk()
-        task = self.store.next_task(exclude=self.active_tasks)
+        task = self.claim_task()
         if task is None:
             return False
         self.active_tasks.add(task['id'])
