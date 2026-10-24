@@ -44,6 +44,34 @@ class Coordinator:
         self.settings, self.clock = settings, clock
         self.jobs, self.agents, self.books, self.instances = {}, {}, {}, {}
         self.uploads = set()
+        self.registry = None
+
+    def node_ids(self):
+        return self.registry.ids() if self.registry else list(self.settings.tokens)
+
+    def enabled(self, agent):
+        return self.registry.enabled(agent) if self.registry else agent in self.settings.tokens
+
+    def revision(self, agent):
+        if not self.registry:
+            return 0
+        try:
+            return self.registry.get(agent)['revision']
+        except ValueError:
+            return -1
+
+    def authenticate(self, agent, token):
+        if self.registry:
+            return self.registry.authenticate(agent, token)
+        expected = self.settings.tokens.get(agent)
+        return bool(expected and secrets.compare_digest(token.encode(), expected.encode()))
+
+    def invalidate(self, agent):
+        self.agents.pop(agent, None)
+        self.instances.pop(agent, None)
+        for job in self.jobs.values():
+            if job.agent == agent:
+                job.error = JobError('AGENT_CHANGED', '节点配置已变更，任务重新排队', True)
 
     def connect(self, agent, instance):
         if not re.fullmatch(r'[0-9a-f]{32}', instance):
@@ -57,14 +85,16 @@ class Coordinator:
         self.agents[agent] = self.clock()
 
     def online(self, agent):
-        return self.clock() - self.agents.get(agent, -1e20) < max(30, self.settings.lease_seconds)
+        return self.enabled(agent) and self.clock() - self.agents.get(agent, -1e20) < max(30, self.settings.lease_seconds)
 
     def snapshot(self):
         return {"enabled": True, "agents": [
-            {"id": name, "online": self.online(name), "task": self.books.get(name),
+            {**(self.registry.public(name) if self.registry else {'id': name, 'label': name, 'enabled': True, 'concurrency': 2}),
+             "online": self.online(name), "task": self.books.get(name),
+             "last_seen_seconds": round(max(0, self.clock() - self.agents[name])) if name in self.agents else None,
              "received_pages": sum(len(j.completed) for j in self.jobs.values() if j.agent == name),
              "total_pages": sum(len(j.pages) for j in self.jobs.values() if j.agent == name)}
-            for name in self.settings.tokens]}
+            for name in self.node_ids()]}
 
     def assign(self, agent, task, manga):
         if agent in self.books:
@@ -78,6 +108,8 @@ class Coordinator:
             self.jobs.pop(job_id, None)
 
     def claim(self, agent):
+        if not self.enabled(agent):
+            raise LeaseConflict('Node disabled')
         self.touch(agent)
         job = next((j for j in self.jobs.values() if j.agent == agent and not j.done and not j.error), None)
         if job is None:
@@ -89,6 +121,7 @@ class Coordinator:
             job.lease = secrets.token_urlsafe(32)
             job.expires = self.clock() + self.settings.lease_seconds
         return {"id": job.id, "lease": job.lease, "lease_seconds": self.settings.lease_seconds,
+                "concurrency": self.registry.get(agent)['concurrency'] if self.registry else None,
                 "book": job.book,
                 "pages": [{"number": p.number, "url": p.url} for n, p in job.pages.items()
                           if n not in job.completed],
@@ -97,7 +130,7 @@ class Coordinator:
 
     def owned(self, job_id, agent, lease):
         job = self.jobs.get(job_id)
-        if (job is None or not lease or job.agent != agent
+        if (job is None or not lease or job.agent != agent or not self.enabled(agent)
                 or not secrets.compare_digest(job.lease, lease) or job.expires <= self.clock()
                 or job.deadline <= self.clock() or job.error):
             raise LeaseConflict('Lease expired, cancelled or reassigned')

@@ -20,10 +20,14 @@ logger = logging.getLogger(__name__)
 def create_app(coordinator):
     @web.middleware
     async def authenticate(request, handler):
+        # Bootstrap routes have their own short-lived enrollment authentication.
+        if request.match_info.route.name in {'agent-installer', 'agent-bundle', 'agent-enroll'}:
+            response = await handler(request)
+            response.headers.update({'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
+            return response
         agent = request.headers.get('X-Agent-ID', '')
-        expected = coordinator.settings.tokens.get(agent)
         supplied = request.headers.get('Authorization', '')
-        if not expected or not hmac.compare_digest(supplied.encode('utf-8'), ('Bearer ' + expected).encode('utf-8')):
+        if not supplied.startswith('Bearer ') or not coordinator.authenticate(agent, supplied[7:]):
             return web.json_response({'error': 'Unauthorized'}, status=401)
         request['agent'] = agent
         try:
@@ -44,6 +48,30 @@ def create_app(coordinator):
 
     app = web.Application(middlewares=[authenticate], client_max_size=4096)
     upload_slots = asyncio.Semaphore(4)
+
+    async def installer(request):
+        from jmemby.distributed.installer import INSTALL_SCRIPT
+        return web.Response(text=INSTALL_SCRIPT, content_type='text/plain')
+
+    async def bundle(request):
+        from jmemby.distributed.installer import agent_bundle
+        data, _ = agent_bundle()
+        return web.Response(body=data, content_type='application/gzip')
+
+    async def enroll(request):
+        from jmemby.distributed.installer import agent_bundle
+        registry = coordinator.registry
+        supplied = request.headers.get('Authorization', '')
+        if not registry or not supplied.startswith('Install '):
+            return web.json_response({'error': 'Invalid enrollment'}, status=401)
+        # Build before consuming the ticket: a packaging failure must not rotate credentials.
+        _, checksum = agent_bundle()
+        try:
+            config = registry.enroll(request.match_info['agent_id'], supplied[8:])
+        except ValueError:
+            return web.json_response({'error': 'Invalid or expired enrollment'}, status=401)
+        coordinator.invalidate(config['AGENT_ID'])
+        return web.json_response({'config': config, 'bundle_sha256': checksum})
 
     def ownership(request):
         return (request.match_info['job_id'], request['agent'], request.headers.get('X-Lease', ''))
@@ -113,6 +141,9 @@ def create_app(coordinator):
                 return await receive_upload(request)
 
     prefix = '/v1/agent'
+    app.router.add_get('/install/agent.sh', installer, name='agent-installer')
+    app.router.add_get('/install/agent.tar.gz', bundle, name='agent-bundle')
+    app.router.add_post('/install/enroll/{agent_id}', enroll, name='agent-enroll')
     app.router.add_post(prefix + '/claim', claim)
     app.router.add_post(prefix + '/jobs/{job_id}/heartbeat', heartbeat)
     app.router.add_post(prefix + '/jobs/{job_id}/complete', complete)

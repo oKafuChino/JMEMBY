@@ -78,6 +78,11 @@ class Agent:
         route = 'jobs/' + job['id']
         max_bytes = min(job['max_bytes'], self.settings.max_page_bytes)
         max_pixels = min(job['max_pixels'], self.settings.max_pixels)
+        concurrency = job.get('concurrency')
+        if concurrency is None:
+            concurrency = self.settings.concurrency
+        if type(concurrency) is not int or not 1 <= concurrency <= 16:
+            raise ValueError('Invalid download concurrency')
 
         async def heartbeat():
             while True:
@@ -87,11 +92,11 @@ class Agent:
         async def download_and_upload():
             reserve = self.settings.min_free_space_mb * 1024**2
             # At most eight pages per subprocess, all groups belong to this book.
-            if shutil.disk_usage(self.root).free < reserve + min(len(pages), 8 * self.settings.concurrency) * max_bytes:
+            if shutil.disk_usage(self.root).free < reserve + min(len(pages), 8 * concurrency) * max_bytes:
                 raise JobError('DISK_LOW', 'Agent has insufficient temporary disk space')
             with tempfile.TemporaryDirectory(prefix='chapter-', dir=self.root) as directory:
                 stage = Path(directory)
-                semaphore = asyncio.Semaphore(self.settings.concurrency)
+                semaphore = asyncio.Semaphore(concurrency)
                 received = 0
 
                 async def group_download(group):

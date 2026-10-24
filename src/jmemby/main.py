@@ -34,6 +34,9 @@ async def run(settings, db_path, recent_logs):
         coordinator = Coordinator(distributed)
     komga = KomgaBridge(komga_command(), settings.operation_timeout)
     store = Store(db_path)
+    if coordinator:
+        from jmemby.distributed.nodes import NodeRegistry
+        coordinator.registry = NodeRegistry(store, distributed.tokens)
     bot = Bot(settings.telegram_bot_token)
     if coordinator:
         from jmemby.distributed.workers import WorkerPool

@@ -50,7 +50,7 @@ class ConfigTests(unittest.TestCase):
             config = MasterSettings.from_env()
             self.assertEqual(config.tokens, TOKENS)
             self.assertNotIn('a' * 43, repr(config))
-            for invalid in ('{}', '[]', '{"a":"short"}', json.dumps({'x': 'a' * 43, 'y': 'a' * 43})):
+            for invalid in ('[]', '{"a":"short"}', json.dumps({'x': 'a' * 43, 'y': 'a' * 43})):
                 with patch.dict(os.environ, {'DOWNLOAD_AGENT_TOKENS': invalid}):
                     with self.assertRaises(ValueError):
                         MasterSettings.from_env()
@@ -317,6 +317,59 @@ class PoolTests(unittest.IsolatedAsyncioTestCase):
         self.store.request_cancel(first['id'], 1)
         claimed = self.store.next_task(exclude={first['id']})
         self.assertEqual(claimed['id'], second['id'])
+
+    async def test_empty_pool_add_delete_and_recreate_without_restart(self):
+        from jmemby.distributed.nodes import NodeRegistry
+        self.coordinator.registry = NodeRegistry(self.store)
+        pool = WorkerPool(self.store, FakeProvider(), self.pool.komga, self.settings, self.coordinator)
+        self.assertEqual(pool.workers, [])
+        self.assertGreater(pool.heartbeat, 0)
+        runner = asyncio.create_task(pool.run())
+        async def wait_for_agents(names):
+            async with asyncio.timeout(3):
+                while sorted(w.agent for w in pool.workers) != names:
+                    await asyncio.sleep(0.02)
+        try:
+            await asyncio.sleep(0)
+            self.coordinator.registry.create('new', 'New', 2)
+            await wait_for_agents(['new'])
+            first = pool.workers[0]
+            self.coordinator.registry.delete('new')
+            await wait_for_agents([])
+            self.coordinator.registry.create('new', 'New again', 1)
+            await wait_for_agents(['new'])
+            self.assertIsNot(first, pool.workers[0])
+            self.assertIs(pool.workers[0].active_tasks, pool.active_tasks)
+        finally:
+            runner.cancel()
+            await asyncio.gather(runner, return_exceptions=True)
+
+    async def test_disable_running_node_requeues_with_original_owner_and_priority(self):
+        from jmemby.distributed.nodes import NodeRegistry
+        self.coordinator.registry = NodeRegistry(self.store, TOKENS)
+        users = UserService(self.store, {1})
+        users.grant(1, 42, True)
+        users.register(42)
+        task = self.store.submit(manga(1), 42, -100)
+        self.coordinator.touch('vps-1')
+        work = asyncio.create_task(self.pool.workers[0].run_once())
+        try:
+            async with asyncio.timeout(3):
+                while not self.coordinator.jobs:
+                    await asyncio.sleep(0.01)
+            self.coordinator.registry.set_enabled('vps-1', False)
+            self.coordinator.invalidate('vps-1')
+            await asyncio.wait_for(work, 2)
+            result = self.store.get(task['id'])
+            self.assertEqual(result['status'], 'RETRY_WAIT')
+            self.assertEqual(result['error_code'], 'AGENT_CHANGED')
+            self.assertEqual((result['user_id'],result['chat_id'],result['priority']),(42,-100,1))
+            self.assertFalse(self.coordinator.books)
+            self.assertFalse(self.coordinator.jobs)
+            self.assertFalse(self.pool.active_tasks)
+        finally:
+            work.cancel()
+            await asyncio.gather(work, return_exceptions=True)
 
     async def test_restart_uses_received_pages_and_new_lease(self):
         task = self.store.submit(manga(1), 1, 1)

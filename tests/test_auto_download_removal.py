@@ -81,7 +81,7 @@ class RemovalTests(unittest.IsolatedAsyncioTestCase):
 
     def test_pending_auto_tasks_cancelled_manual_and_terminal_history_preserved(self):
         db = self.upgrade()
-        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 8)
+        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 9)
         for task_id, (state, raw, sequence) in self.original.items():
             task = self.store.get(task_id)
             if task_id.startswith("schedule_") and state not in TERMINAL:
@@ -153,7 +153,7 @@ class RemovalTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "new.db")
             try:
-                self.assertEqual(store.connection.execute("PRAGMA user_version").fetchone()[0], 8)
+                self.assertEqual(store.connection.execute("PRAGMA user_version").fetchone()[0], 9)
                 self.assertEqual(store.connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'schedule%'").fetchone()[0], 0)
                 first = store.submit(manga(), 1, 1)
                 second = store.submit(replace(manga(), source_id="43"), 1, 1)
@@ -193,6 +193,7 @@ class RemovalTests(unittest.IsolatedAsyncioTestCase):
             old.connection.execute("ALTER TABLE users DROP COLUMN user_group")
             old.connection.execute("DROP TABLE registration_grants")
             old.connection.execute("ALTER TABLE tasks DROP COLUMN priority")
+            old.connection.execute("DROP TABLE download_nodes")
             old.connection.execute("PRAGMA user_version=4")
         finally:
             old.close()
@@ -201,7 +202,7 @@ class RemovalTests(unittest.IsolatedAsyncioTestCase):
             rows = upgraded.connection.execute("SELECT id,queue_sequence FROM tasks ORDER BY queue_sequence").fetchall()
             self.assertEqual([r[0] for r in rows], sorted([first["id"], second["id"]]))
             self.assertEqual([r[1] for r in rows], [1, 2])
-            self.assertEqual(upgraded.connection.execute("PRAGMA user_version").fetchone()[0], 8)
+            self.assertEqual(upgraded.connection.execute("PRAGMA user_version").fetchone()[0], 9)
             self.assertEqual(upgraded.connection.execute("PRAGMA foreign_key_check").fetchall(), [])
         finally:
             upgraded.close()

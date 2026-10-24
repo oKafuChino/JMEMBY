@@ -155,7 +155,27 @@ class Store:
                 self.connection.close()
                 raise
             version = 8
-        if version != 8:
+        if version == 8:
+            try:
+                self.connection.executescript("""
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE download_nodes (
+                        id TEXT PRIMARY KEY, label TEXT NOT NULL,
+                        token_hash TEXT NOT NULL DEFAULT '',
+                        enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+                        concurrency INTEGER NOT NULL DEFAULT 2 CHECK(concurrency BETWEEN 1 AND 16),
+                        revision INTEGER NOT NULL DEFAULT 1,
+                        deleted INTEGER NOT NULL DEFAULT 0 CHECK(deleted IN (0,1)),
+                        ticket_hash TEXT, ticket_expires REAL,
+                        created_at REAL NOT NULL, updated_at REAL NOT NULL);
+                    PRAGMA user_version=9;
+                    COMMIT;
+                """)
+            except BaseException:
+                self.connection.close()
+                raise
+            version = 9
+        if version != 9:
             self.connection.close()
             raise RuntimeError("Unsupported database version; restore or migrate before startup")
 

@@ -100,6 +100,46 @@ def create_app(service, auth, settings):
             'SELECT status,COUNT(*) n FROM tasks GROUP BY status')}
         return web.json_response(stats)
 
+    async def nodes(request):
+        coordinator = getattr(service, 'download_coordinator', None)
+        if not coordinator or not coordinator.registry:
+            return web.json_response({'enabled': False, 'agents': [], 'public_url': ''})
+        return web.json_response({**coordinator.snapshot(), 'public_url': coordinator.registry.origin()})
+
+    async def node_action(request):
+        coordinator = getattr(service, 'download_coordinator', None)
+        if not coordinator or not coordinator.registry:
+            raise ValueError('请先启用 DISTRIBUTED_ENABLED，并部署 Agent API 的 HTTPS 入口')
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError('请求必须是 JSON 对象')
+        registry, operation = coordinator.registry, data.get('action')
+        name = data.get('id')
+        if operation == 'origin':
+            return web.json_response({'public_url': registry.set_origin(data.get('public_url'))})
+        if operation == 'create':
+            if not registry.origin():
+                raise ValueError('请先保存 Agent HTTPS 地址')
+            registry.create(name, data.get('label'), data.get('concurrency'))
+            return web.json_response(registry.issue(name), status=201)
+        if not isinstance(name, str):
+            raise ValueError('节点 ID 无效')
+        if operation == 'install':
+            return web.json_response(registry.issue(name))
+        if operation == 'update':
+            registry.update(name, data.get('label'), data.get('concurrency'))
+        elif operation == 'enabled':
+            registry.set_enabled(name, data.get('enabled'))
+            coordinator.invalidate(name)
+        elif operation == 'delete':
+            if name in coordinator.books:
+                raise ValueError('该节点还有运行任务，请先停用并等待任务回收后删除')
+            registry.delete(name)
+            coordinator.invalidate(name)
+        else:
+            raise ValueError('不支持的节点操作')
+        return web.json_response({'ok': True})
+
     async def members(request):
         rows = users.list_users(request['admin'], page_number(request))
         for row in rows:
@@ -146,6 +186,7 @@ def create_app(service, auth, settings):
 
     app.add_routes([web.get('/', index), web.post('/api/login', login), web.get('/api/session', session),
                     web.post('/api/logout', logout), web.get('/api/overview', overview),
+                    web.get('/api/nodes', nodes), web.post('/api/nodes', node_action),
                     web.get('/api/users', members), web.get('/api/tasks', tasks),
                     web.post('/api/batches', batch_start), web.get('/api/batches', batch_latest),
                     web.get('/api/batches/{batch_id}', batch_status),

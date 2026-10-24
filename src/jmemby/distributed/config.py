@@ -33,11 +33,11 @@ class MasterSettings:
             tokens = json.loads(os.getenv("DOWNLOAD_AGENT_TOKENS", "{}"))
         except ValueError:
             raise ValueError("DOWNLOAD_AGENT_TOKENS must be a JSON object") from None
-        if (not isinstance(tokens, dict) or not 1 <= len(tokens) <= 32
+        if (not isinstance(tokens, dict) or len(tokens) > 32
                 or any(not re.fullmatch(r"[A-Za-z0-9_-]{1,48}", key) or not valid_token(value)
                        for key, value in tokens.items())
                 or len(set(tokens.values())) != len(tokens)):
-            raise ValueError("DOWNLOAD_AGENT_TOKENS requires 1–32 unique agent IDs and unique random tokens (32+ characters)")
+            raise ValueError("DOWNLOAD_AGENT_TOKENS supports up to 32 unique agent IDs and unique random tokens (32+ characters)")
         if os.getenv("PROVIDER_COMMAND"):
             raise ValueError("Distributed downloads currently require the bundled JM adapter")
         return cls(True, tokens, os.getenv("DISTRIBUTED_HOST", "127.0.0.1"),
