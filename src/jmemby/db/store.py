@@ -193,15 +193,24 @@ class Store:
                                 (token, user_id, chat_id, json.dumps(asdict(manga)), time.time() + 600))
         return token
 
-    def dismiss(self, token, user_id):
-        self.connection.execute("UPDATE confirmations SET dismissed=1 WHERE token=? AND user_id=? AND task_id IS NULL",
-                                (token, user_id))
-
-    def confirm(self, token, user_id):
+    def dismiss(self, token, user_id, chat_id=None):
         with self.transaction() as db:
             confirmation = db.execute("SELECT * FROM confirmations WHERE token=?", (token,)).fetchone()
-            if not confirmation or confirmation["user_id"] != user_id:
-                raise ValueError("确认按钮无效")
+            self._check_confirmation(confirmation, user_id, chat_id)
+            if confirmation["task_id"]:
+                raise ValueError("任务已确认，不能取消预览；请私聊使用 /cancel 任务ID")
+            db.execute("UPDATE confirmations SET dismissed=1 WHERE token=?", (token,))
+
+    @staticmethod
+    def _check_confirmation(confirmation, user_id, chat_id):
+        if (not confirmation or confirmation["user_id"] != user_id
+                or (chat_id is not None and confirmation["chat_id"] != chat_id)):
+            raise ValueError("按钮仅限发起人在原聊天中操作")
+
+    def confirm(self, token, user_id, chat_id=None):
+        with self.transaction() as db:
+            confirmation = db.execute("SELECT * FROM confirmations WHERE token=?", (token,)).fetchone()
+            self._check_confirmation(confirmation, user_id, chat_id)
             if confirmation["dismissed"]:
                 raise ValueError("已取消确认")
             if confirmation["task_id"]:

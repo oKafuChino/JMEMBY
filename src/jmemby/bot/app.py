@@ -10,29 +10,36 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile
 from jmemby.bot.completion import completion_text, read_cover
 from html import escape
 from jmemby.bot.presentation import describe, normalize
+from jmemby.bot.access import chat_allows, parse_command
 
 from jmemby.domain.errors import JobError
-
-
-def allowed(event, ids):
-    user = getattr(event, "from_user", None)
-    message = event.message if isinstance(event, CallbackQuery) else event
-    chat = getattr(message, "chat", None)
-    return bool(user and user.id in ids and chat and chat.type == "private" and chat.id == user.id)
 
 
 class Authorization(BaseMiddleware):
     def __init__(self, users):
         self.users = users
+        self.bot_username = None
 
     async def __call__(self, handler, event, data):
         user = getattr(event, "from_user", None)
-        if not user or not allowed(event, {user.id}):
-            if isinstance(event, CallbackQuery):
+        callback = isinstance(event, CallbackQuery)
+        message = event.message if callback else event
+        chat = getattr(message, "chat", None)
+        command, recipient, _ = parse_command(getattr(event, "text", ""))
+        action = (event.data or "").partition(":")[0] if callback else None
+        if (not user or user.is_bot or not chat
+                or (not callback and getattr(message, "sender_chat", None))
+                or not chat_allows(chat.type, chat.id, user.id, command, action)):
+            if callback:
                 await event.answer("无权操作", show_alert=True)
             return
-        command = (normalize(getattr(event, "text", "") or "").split() or [""])[0].split("@")[0]
-        public = not isinstance(event, CallbackQuery) and command in {"/start", "/help", "/register", "/me"}
+        if not callback and command.startswith("/") and recipient:
+            if self.bot_username is None:
+                self.bot_username = (await data["bot"].get_me()).username or ""
+            if recipient.lower() != self.bot_username.lower():
+                return
+        command, _, _ = parse_command(normalize(getattr(event, "text", "") or ""))
+        public = not callback and command in {"/start", "/help", "/register", "/me"}
         if not public:
             try:
                 self.users.require_member(user.id)
@@ -40,7 +47,10 @@ class Authorization(BaseMiddleware):
                 if isinstance(event, CallbackQuery):
                     await event.answer(str(exc), show_alert=True)
                 else:
-                    await event.answer(str(exc))
+                    text = str(exc)
+                    if chat.type in {"group", "supergroup"}:
+                        text += "\n注册和账号管理请私聊机器人，群聊仅支持 /jm。"
+                    await event.answer(text)
                 return
         return await handler(event, data)
 
@@ -79,8 +89,7 @@ def create_dispatcher(service, settings, accounts, diagnostics):
     @router.message(F.text)
     async def message_handler(message: Message):
         text = normalize(message.text)
-        head, _, argument = text.partition(" ")
-        command = head.split("@")[0]
+        command, _, argument = parse_command(text)
         user_id = message.from_user.id
         pending = None
         try:
@@ -92,6 +101,7 @@ def create_dispatcher(service, settings, accounts, diagnostics):
                     help_text += "\n/status 服务状态\n/logs 最近 100 条应用日志"
                     help_text += "\n管理员：/admin /users [页码]\n/registration on|off\n/ban 用户ID /unban 用户ID\n/disk 磁盘状态"
                     help_text += "\n/invite_mode on|off\n/invite_create [次数]\n/invites [页码]\n/invite_revoke 编号"
+                help_text += "\n/jm ID或链接 查询并确认下载\n群聊仅支持 /jm；请先在私聊注册。"
                 await message.answer(help_text, reply_markup=menu(user_id))
             elif command == "/register":
                 result = users.register(user_id, message.from_user.username, message.from_user.full_name, argument.strip())
@@ -173,16 +183,22 @@ def create_dispatcher(service, settings, accounts, diagnostics):
                 service.store.request_cancel(argument.strip(), user_id)
                 await message.answer("已请求取消；停止后会通知，已发布文件保留")
             elif command == "/retry":
-                task = service.retry(argument.strip(), user_id)
+                task = service.retry(argument.strip(), user_id, message.chat.id)
+                if task["chat_id"] != message.chat.id:
+                    await message.answer("该作品已在其他聊天中下载，请在原聊天查看进度")
+                    return
                 sent = await message.answer(describe(task))
                 service.store.update(task["id"], message_id=sent.message_id)
             elif command == "/schedules" or command.startswith("/schedule_") or text == "⏰ 定时下载":
                 await message.answer("自动下载功能已移除。请发送漫画 ID 或链接，确认后手动下载。", reply_markup=menu(user_id))
-            elif command.startswith("/") and command != "/download":
+            elif command.startswith("/") and command != "/jm":
                 await message.answer("未知命令，请使用 /help")
             else:
+                if command == "/jm" and not argument:
+                    await message.answer("用法：/jm 漫画ID或链接；群聊中也可使用 /jm@机器人用户名 漫画ID")
+                    return
                 pending = await message.answer("⏳ 正在获取作品信息，请稍候……")
-                manga, token = await service.preview(argument if command == "/download" else text, user_id, message.chat.id)
+                manga, token = await service.preview(argument if command == "/jm" else text, user_id, message.chat.id)
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="确认下载", callback_data=f"confirm:{token}"),
                     InlineKeyboardButton(text="取消", callback_data=f"dismiss:{token}"),
@@ -202,13 +218,16 @@ def create_dispatcher(service, settings, accounts, diagnostics):
             if action == "sched":
                 await callback.answer("自动下载功能已移除，此按钮已失效。", show_alert=True)
             elif action == "dismiss":
-                service.store.dismiss(token, callback.from_user.id)
+                service.store.dismiss(token, callback.from_user.id, callback.message.chat.id)
                 await callback.answer("已取消")
                 await callback.message.delete()
             elif action == "confirm":
-                task = service.confirm(token, callback.from_user.id)
+                task = service.confirm(token, callback.from_user.id, callback.message.chat.id)
                 if task["user_id"] != callback.from_user.id:
                     await callback.answer("该漫画已有下载任务")
+                    return
+                if task["chat_id"] != callback.message.chat.id:
+                    await callback.answer("该作品已在其他聊天中下载，请在原聊天查看进度", show_alert=True)
                     return
                 if task["message_id"] and task["message_id"] != callback.message.message_id:
                     await callback.answer("该作品已有任务")

@@ -18,9 +18,9 @@ class TaskService:
         self.authorize(user_id)  # Account may have been blocked during the network request.
         return manga, self.store.confirmation(manga, user_id, chat_id)
 
-    def confirm(self, token, user_id):
+    def confirm(self, token, user_id, chat_id=None):
         self.authorize(user_id)
-        return self.store.confirm(token, user_id)
+        return self.store.confirm(token, user_id, chat_id)
 
     def get(self, task_id, user_id):
         self.authorize(user_id)
@@ -29,8 +29,9 @@ class TaskService:
             raise ValueError("任务不存在")
         return task
 
-    def retry(self, task_id, user_id):
+    def retry(self, task_id, user_id, chat_id=None):
         task = self.get(task_id, user_id)
         if task["status"] != "FAILED":
             raise ValueError("只能重试失败的任务")
-        return self.store.submit(decode_manga(task["snapshot"]), user_id, task["chat_id"], task_id)
+        return self.store.submit(decode_manga(task["snapshot"]), user_id,
+                                 task["chat_id"] if chat_id is None else chat_id, task_id)

@@ -127,13 +127,21 @@ docker compose up -d app
 
 账号管理接口根据 [Komga 官方 UserController](https://github.com/gotson/komga/blob/master/komga/src/main/kotlin/org/gotson/komga/interfaces/api/rest/UserController.kt) 和 [UserCreationDto](https://github.com/gotson/komga/blob/master/komga/src/main/kotlin/org/gotson/komga/interfaces/api/rest/dto/UserCreationDto.kt) 实现，使用 `/api/v2/users`。已完成离线测试，仍需在实际部署版本验收。
 
-- 发送数字漫画 ID 或 `/download ID`，点击确认。
+- 私聊发送数字漫画 ID、链接或 `/jm ID或链接`，点击确认。原 `/download` 命令已移除。
 - `/queue [页码]`、`/status 任务ID`：查询队列和进度。
 - `/cancel 任务ID`：取消任务，保留已发布章节。
 - `/retry 任务ID`：重试失败任务，复用有效文件。
 - `/library`：阅读入口；`/disk`：剩余空间。
 
-仅私聊已注册用户和管理员可使用下载功能，命令和按钮都会重新检查权限。普通用户只能操作自己的任务；用户管理命令仅管理员可用。已保存文件和 Komga 入库分开记录；扫描接受不等于完成，只有匹配到所有文件才通知成功。
+已注册用户和管理员可使用下载功能，命令和按钮都会重新检查权限。普通用户只能操作自己的任务；用户管理命令仅管理员可用。已保存文件和 Komga 入库分开记录；扫描接受不等于完成，只有匹配到所有文件才通知成功。
+
+### 群聊下载
+
+先私聊机器人完成 `/register` 注册，再将机器人加入群聊，并允许其发送消息。在普通群和超级群使用 `/jm 漫画ID或链接`；有多个机器人时使用 `/jm@机器人用户名 漫画ID或链接` 明确指定接收者。发给其他机器人的命令会被忽略。
+
+群聊仅响应 `/jm` 及其确认/取消按钮；其他命令（包括 `/download`）、直接发送的 ID/链接和菜单文字均被忽略。注册、阅读账号、任务管理和管理员操作仍在私聊进行，匿名管理员或以频道身份发送的消息不受理。
+
+预览按钮仅限原发起人在原聊天中操作；确认后进度和完成结果发回任务所在聊天。同一作品已有自己的进行中任务时，重复提交不会改变原任务的通知位置。需要取消下载时，私聊发送 `/cancel 任务ID`；群聊预览上的“取消”仅取消尚未确认的预览。
 
 ## 运维
 
