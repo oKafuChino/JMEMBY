@@ -106,7 +106,7 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
                 result = users.grant(user_id, target.id, white=command == "/white")
                 await message.answer(f"✅ 用户 {target.id}：{result}。\n用户组：{users.group_label(target.id)}\n未注册用户请私聊机器人发送 /register；阅读账号只在私聊领取。")
             elif command in {"/start", "/help"}:
-                help_text = "📚 欢迎使用 JMEMBY\n\n① 注册账号 → ② 发送漫画 ID → ③ 确认下载\n\n/register [邀请码] 注册\n/account 领取或补开阅读账号\n/me 我的信息\n/queue 我的任务\n/status 任务ID 查看进度\n/cancel 任务ID 取消任务\n/retry 任务ID 重试\n/library 开始阅读"
+                help_text = "📚 欢迎使用 Komga Plus\n\n① 注册账号 → ② 发送漫画 ID → ③ 确认下载\n\n/register [邀请码] 注册\n/account 领取或补开阅读账号\n/me 我的信息\n/queue 我的任务\n/status 任务ID 查看进度\n/cancel 任务ID 取消任务\n/retry 任务ID 重试\n/library 开始阅读"
                 if users.invite_required():
                     help_text += "\n当前为邀请注册：请向管理员获取邀请码"
                 if users.is_admin(user_id):
@@ -205,7 +205,7 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
                 await message.answer(describe_history(history))
             elif command == "/logs":
                 content = diagnostics.recent_logs(user_id)
-                await message.answer_document(BufferedInputFile(content.encode("utf-8"), filename="jmemby-recent-100.log"),
+                await message.answer_document(BufferedInputFile(content.encode("utf-8"), filename="komga-plus-recent-100.log"),
                                               caption="📜 本次启动以来最近最多 100 条应用日志（已脱敏）", protect_content=False)
             elif command == "/cancel":
                 service.store.request_cancel(argument.strip(), user_id)

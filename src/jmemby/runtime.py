@@ -22,7 +22,7 @@ def instance_lock(path: Path):
                 import fcntl
                 fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            raise RuntimeError("Another JMEMBY instance is running") from exc
+            raise RuntimeError("Another Komga Plus instance is running") from exc
         try:
             yield
         finally:

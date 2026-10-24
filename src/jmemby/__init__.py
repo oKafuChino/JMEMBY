@@ -1,1 +1,1 @@
-"""JMEMBY application package."""
+"""Komga Plus application package."""

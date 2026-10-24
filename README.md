@@ -1,6 +1,6 @@
-# JMEMBY
+# Komga Plus
 
-Telegram 管理的漫画下载服务：提交禁漫漫画 ID → 确认下载 → 生成 CBZ → Komga 自动扫描 → Telegram 通知。
+Komga Plus 是一个通过 Telegram Bot 和网页管理面板管理的 Komga 漫画下载服务：提交禁漫漫画 ID → 确认下载 → 生成 CBZ → Komga 自动扫描 → Telegram 通知。
 
 下载过程复用同一条消息：获取信息 → 确认 → 排队/下载 → 完成。成功后原消息替换为“已完成、标题、作者”和封面，不再附带任务编号或阅读链接。封面使用首章节已下载的第一页，缺失时降级为文字。失败/取消保留结果说明供排查。若 Telegram 不允许编辑，会发送结果并尝试删除旧过程消息；受 Telegram 删除期限等限制，极少数旧消息可能无法清理。用户发送的命令和主动查询结果不会删除。
 
@@ -15,6 +15,10 @@ ComicInfo 的系列名（`Series`）和章节标题（`Title`）也会附带 `[J
 内置 [JMComic-Crawler-Python](https://github.com/hect0x7/JMComic-Crawler-Python) SDK 适配器和 Komga REST 适配器，无需另写下载脚本。支持白名单、持久化队列、去重、取消、重启恢复、磁盘阈值、失败重试及 Docker Compose 部署。
 
 **验证状态：适配代码和离线契约测试已完成；由于开发环境网络受限，尚未核实上游当前源码，也未运行真实 JMComic / Komga / Telegram 或 VPS 验收。当前为待实测版本，不承诺开箱即用。**
+
+## 项目名称与升级兼容
+
+项目名称为 **Komga Plus**。当前仓库地址仍沿用 `oKafuChino/JMEMBY`；Python 包名及命令 `jmemby`、数据库文件 `jmemby.db`、阅读账号后缀 `@jmemby.local` 和 CBZ 内部标识 `jmemby.json` 保持兼容。现有部署无需重建账号或迁移数据，请继续使用原项目目录和配置。
 
 ## 一键安装
 

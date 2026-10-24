@@ -1,7 +1,7 @@
 [project]
 name = "jmemby"
 version = "0.1.0"
-description = "Telegram-managed manga downloader for Komga"
+description = "Komga Plus: Telegram and web-managed manga downloads for Komga"
 requires-python = ">=3.12"
 dependencies = [
   "aiohttp>=3.10,<4",

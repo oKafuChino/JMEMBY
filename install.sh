@@ -56,5 +56,5 @@ until "${SUDO[@]}" docker compose run --rm app check-integrations; do
 done
 "${SUDO[@]}" docker compose up -d app
 "${SUDO[@]}" docker compose ps
-echo '部署命令已完成。请用 Telegram 提交一个小漫画验收真实下载和入库。'
+echo 'Komga Plus 部署命令已完成。请用 Telegram 提交一个小漫画验收真实下载和入库。'
 echo '排查日志：sudo docker compose logs --tail 100 app'
