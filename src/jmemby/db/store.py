@@ -141,7 +141,21 @@ class Store:
                 self.connection.close()
                 raise
             version = 7
-        if version != 7:
+        if version == 7:
+            try:
+                self.connection.executescript("""
+                    BEGIN IMMEDIATE;
+                    ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0 CHECK(priority IN (0,1));
+                    UPDATE tasks SET priority=1 WHERE user_id IN (SELECT user_id FROM users WHERE user_group='white');
+                    CREATE INDEX task_priority_sequence ON tasks(priority DESC,queue_sequence);
+                    PRAGMA user_version=8;
+                    COMMIT;
+                """)
+            except BaseException:
+                self.connection.close()
+                raise
+            version = 8
+        if version != 8:
             self.connection.close()
             raise RuntimeError("Unsupported database version; restore or migrate before startup")
 
@@ -204,7 +218,17 @@ class Store:
             self.update(task_id, status=status, error_code=code, error=error)
             db.execute("INSERT OR IGNORE INTO notifications(task_id,event) VALUES (?,?)", (task_id, status))
 
-    def reject_duplicate(self, source, source_id):
+    def user_priority(self, user_id):
+        row = self.connection.execute("SELECT user_group,blocked FROM users WHERE user_id=?", (user_id,)).fetchone()
+        return int(bool(row and row["user_group"] == "white" and not row["blocked"]))
+
+    def check_submission(self, source, source_id, user_id):
+        with self.transaction():
+            promoted = self.reject_duplicate(source, source_id, user_id)
+        if promoted:
+            raise ValueError("该漫画已有任务，已将原任务移至白名单优先队列末尾，未创建新任务")
+
+    def reject_duplicate(self, source, source_id, user_id=None):
         record = self.connection.execute(
             "SELECT id FROM manga WHERE source=? AND source_id=?", (source, source_id)).fetchone()
         if not record:
@@ -213,13 +237,21 @@ class Store:
                 "SELECT 1 FROM tasks WHERE manga_id=? AND status='COMPLETED' LIMIT 1",
                 (record["id"],)).fetchone():
             raise ValueError("该漫画已下载完成，拒绝重复下载，请前往漫画库阅读")
-        if self.connection.execute(
-                "SELECT 1 FROM tasks WHERE manga_id=? AND status NOT IN ('COMPLETED','FAILED','CANCELLED') LIMIT 1",
-                (record["id"],)).fetchone():
+        active = self.connection.execute(
+                "SELECT * FROM tasks WHERE manga_id=? AND status NOT IN ('COMPLETED','FAILED','CANCELLED') LIMIT 1",
+                (record["id"],)).fetchone()
+        if active:
+            if (self.user_priority(user_id) and not active["priority"]
+                    and active["status"] in {"QUEUED", "RETRY_WAIT", "PAUSED_DISK"}
+                    and not active["cancel_requested"]):
+                sequence = self.connection.execute("SELECT COALESCE(MAX(queue_sequence),0)+1 FROM tasks").fetchone()[0]
+                self.connection.execute("UPDATE tasks SET priority=1,queue_sequence=?,updated_at=? WHERE id=?",
+                                        (sequence, time.time(), active["id"]))
+                return True
             raise ValueError("该漫画已有进行中的任务，拒绝重复下载")
 
     def confirmation(self, manga, user_id, chat_id):
-        self.reject_duplicate(manga.source, manga.source_id)
+        self.check_submission(manga.source, manga.source_id, user_id)
         token = secrets.token_urlsafe(12)
         self.connection.execute("INSERT INTO confirmations(token,user_id,chat_id,snapshot,expires) VALUES (?,?,?,?,?)",
                                 (token, user_id, chat_id, json.dumps(asdict(manga)), time.time() + 600))
@@ -250,19 +282,26 @@ class Store:
             if confirmation["expires"] < time.time():
                 raise ValueError("确认已过期，请重新提交")
             task = self._submit(db, decode_manga(confirmation["snapshot"]), user_id, confirmation["chat_id"])
-            db.execute("UPDATE confirmations SET task_id=? WHERE token=?", (task["id"], token))
-            return task
+            if task is not None:
+                db.execute("UPDATE confirmations SET task_id=? WHERE token=?", (task["id"], token))
+        if task is None:
+            raise ValueError("该漫画已有任务，已将原任务移至白名单优先队列末尾，未创建新任务")
+        return task
 
     def submit(self, manga, user_id, chat_id, retry_of=None):
         with self.transaction() as db:
-            return self._submit(db, manga, user_id, chat_id, retry_of)
+            task = self._submit(db, manga, user_id, chat_id, retry_of)
+        if task is None:
+            raise ValueError("该漫画已有任务，已将原任务移至白名单优先队列末尾，未创建新任务")
+        return task
 
     def _submit(self, db, manga, user_id, chat_id, retry_of=None):
         if not manga.chapters or len({c.source_id for c in manga.chapters}) != len(manga.chapters):
             raise ValueError("章节清单为空或重复")
         # Called under BEGIN IMMEDIATE: another submission cannot pass this
         # check and enqueue the same work between the check and INSERT.
-        self.reject_duplicate(manga.source, manga.source_id)
+        if self.reject_duplicate(manga.source, manga.source_id, user_id):
+            return None
         raw = json.dumps(asdict(manga), ensure_ascii=False)
         directory = library_directory(Path(), manga).as_posix()
         db.execute("INSERT OR IGNORE INTO manga(source,source_id,title,directory,metadata) VALUES (?,?,?,?,?)",
@@ -272,7 +311,7 @@ class Store:
         db.execute("INSERT INTO tasks(id,manga_id,snapshot,user_id,chat_id,retry_of,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
                    (task_id, record["id"], raw, user_id, chat_id, retry_of, now, now))
         sequence = db.execute("SELECT COALESCE(MAX(queue_sequence),0)+1 FROM tasks").fetchone()[0]
-        db.execute("UPDATE tasks SET queue_sequence=? WHERE id=?", (sequence, task_id))
+        db.execute("UPDATE tasks SET queue_sequence=?,priority=? WHERE id=?", (sequence, self.user_priority(user_id), task_id))
         for chapter in manga.chapters:
             path = (Path(record["directory"]) / chapter_filename(chapter, manga)).as_posix()
             db.execute("INSERT OR IGNORE INTO chapters(manga_id,source_id,ordinal,title,path) VALUES (?,?,?,?,?)",
@@ -297,7 +336,7 @@ class Store:
     def next_task(self):
         with self.transaction() as db:
             row = db.execute("SELECT * FROM tasks WHERE status IN ('QUEUED','RETRY_WAIT','CANCEL_REQUESTED') "
-                             "AND (next_at<=? OR cancel_requested=1) ORDER BY queue_sequence LIMIT 1", (time.time(),)).fetchone()
+                             "AND (next_at<=? OR cancel_requested=1) ORDER BY priority DESC,queue_sequence LIMIT 1", (time.time(),)).fetchone()
             if row:
                 self.update(row["id"], status="DOWNLOADING")
                 return self.get(row["id"])

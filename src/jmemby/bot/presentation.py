@@ -18,6 +18,7 @@ def normalize(text):
 def describe(task):
     title = str(json.loads(task["snapshot"])["title"])[:200]
     lines = [f"📖 {title}", STATUS.get(task["status"], task["status"]), ""]
+    lines.append("队列：" + ("白名单优先" if task.get("priority", 0) else "普通"))
     if task["progress"]:
         lines.append(task["progress"])
     if task["error"]:

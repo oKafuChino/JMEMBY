@@ -194,7 +194,7 @@ class UsersTests(unittest.IsolatedAsyncioTestCase):
         db.close()
         upgraded = Store(legacy)
         try:
-            self.assertEqual(upgraded.connection.execute("PRAGMA user_version").fetchone()[0], 7)
+            self.assertEqual(upgraded.connection.execute("PRAGMA user_version").fetchone()[0], 8)
             self.assertEqual(upgraded.connection.execute("SELECT title FROM manga").fetchone()[0], "Old")
             UserService(upgraded, {1}).register(2)
         finally:
