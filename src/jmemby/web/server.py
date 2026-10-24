@@ -4,6 +4,7 @@ import secrets
 from aiohttp import web
 
 from jmemby.web.ui import PAGE
+from jmemby.web.batch import BatchDownloads
 
 
 def create_app(service, auth, settings):
@@ -37,7 +38,27 @@ def create_app(service, auth, settings):
                                  'Content-Security-Policy': "default-src 'none'; script-src 'nonce-" + request.get('nonce', '') + "'; style-src 'nonce-" + request.get('nonce', '') + "'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
         return response
 
-    app = web.Application(middlewares=[guard], client_max_size=8192)
+    app = web.Application(middlewares=[guard], client_max_size=65536)
+    batches = BatchDownloads(service)
+
+    async def batch_lifecycle(app):
+        yield
+        await batches.close()
+
+    app.cleanup_ctx.append(batch_lifecycle)
+
+    async def batch_start(request):
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError('请求必须是 JSON 对象')
+        # Actor/chat/priority always come from authenticated server state.
+        return web.json_response(batches.start(request['admin'], data.get('text')), status=202)
+
+    async def batch_status(request):
+        return web.json_response(batches.snapshot(request['admin'], request.match_info['batch_id']))
+
+    async def batch_latest(request):
+        return web.json_response({'batch': batches.latest(request['admin'])})
 
     async def index(request):
         request['nonce'] = secrets.token_urlsafe(24)
@@ -124,6 +145,8 @@ def create_app(service, auth, settings):
     app.add_routes([web.get('/', index), web.post('/api/login', login), web.get('/api/session', session),
                     web.post('/api/logout', logout), web.get('/api/overview', overview),
                     web.get('/api/users', members), web.get('/api/tasks', tasks),
+                    web.post('/api/batches', batch_start), web.get('/api/batches', batch_latest),
+                    web.get('/api/batches/{batch_id}', batch_status),
                     web.get('/api/history', history), web.post('/api/action', action)])
     return app
 

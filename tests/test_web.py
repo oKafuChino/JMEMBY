@@ -1,9 +1,10 @@
 import importlib.util
+import asyncio
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from jmemby.db.store import Store
 from jmemby.services.users import UserService
@@ -74,6 +75,47 @@ if HAS_AIOHTTP:
 
 @unittest.skipUnless(HAS_AIOHTTP, 'aiohttp required for HTTP integration tests')
 class WebTests(unittest.IsolatedAsyncioTestCase):
+    async def test_batch_submission_auth_csrf_actor_and_progress(self):
+        from jmemby.domain.models import Chapter, Manga
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / 'db')
+            users = UserService(store, {1})
+            auth = AdminAuth(users)
+            provider = SimpleNamespace(source='jmcomic', get_manga=AsyncMock(return_value=
+                Manga('jmcomic', '42', 'Batch', (), (Chapter('52', 1, 'Chapter', ()),))))
+            service = TaskService(store, provider, users=users)
+            settings = SimpleNamespace(web_public_url='http://localhost:8080')
+            client = TestClient(TestServer(create_app(service, auth, settings)))
+            await client.start_server()
+            try:
+                self.assertEqual((await client.get('/api/batches')).status, 401)
+                self.assertEqual((await client.post('/api/batches', json={'text':'42'},
+                    headers={'Origin':settings.web_public_url})).status, 401)
+                token = auth.login(auth.issue(1))
+                headers = {'Cookie':'session='+token, 'Origin':settings.web_public_url}
+                self.assertEqual((await client.post('/api/batches', json={'text':'42'}, headers=headers)).status, 403)
+                headers['X-CSRF-Token'] = auth.authenticate(token)['csrf']
+                self.assertEqual((await client.post('/api/batches', json={'text':['42']}, headers=headers)).status, 400)
+                response = await client.post('/api/batches', json={'text':'42 42 bad','user_id':99,'chat_id':-100,'priority':1}, headers=headers)
+                self.assertEqual(response.status, 202)
+                batch_id = (await response.json())['id']
+                for _ in range(20):
+                    response = await client.get('/api/batches/'+batch_id, headers=headers)
+                    result = await response.json()
+                    if result['status'] == 'completed':
+                        break
+                    await asyncio.sleep(0)
+                self.assertEqual(result['counts']['queued'], 1)
+                task = store.get(result['items'][0]['task_id'])
+                self.assertEqual((task['user_id'], task['chat_id'], task['priority']), (1, 1, 0))
+                response = await client.get('/api/batches', headers=headers)
+                self.assertEqual((await response.json())['batch']['id'], batch_id)
+                headers['Origin'] = 'https://evil.example'
+                self.assertEqual((await client.post('/api/batches', json={'text':'43'}, headers=headers)).status, 403)
+            finally:
+                await client.close()
+                store.close()
+
     async def test_auth_csrf_and_admin_operations(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / 'db')
