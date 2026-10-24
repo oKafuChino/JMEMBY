@@ -185,6 +185,17 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
                                  chat_instance="test", data=f"{action}:{token}", message=message or self.pending)
         await self.dispatcher.feed_update(self.bot, Update(update_id=2, callback_query=callback))
 
+    async def test_who_is_private_admin_only(self):
+        task = self.store.submit(manga(), 2, -100)
+        self.store.finish(task["id"], "COMPLETED")
+        await self.send("/who 42", user_id=1)
+        self.answer.assert_not_awaited()
+        await self.send("/who 42", user_id=2, kind="private", chat_id=2)
+        self.assertIn("仅管理员", self.answer.call_args.args[0])
+        await self.send("/who 42", user_id=1, kind="private", chat_id=1)
+        self.assertIn("首次成功下载者：2", self.answer.call_args.args[0])
+        self.provider.get_manga.assert_not_awaited()
+
     def token(self):
         return self.store.connection.execute("SELECT token FROM confirmations ORDER BY rowid DESC LIMIT 1").fetchone()[0]
 

@@ -1,0 +1,139 @@
+import asyncio
+import secrets
+
+from aiohttp import web
+
+from jmemby.bot.presentation import describe_history
+from jmemby.web.ui import PAGE
+
+
+def create_app(service, auth, settings):
+    users, store = service.users, service.store
+    secure = settings.web_public_url.startswith('https://')
+
+    @web.middleware
+    async def guard(request, handler):
+        try:
+            if request.method != 'GET':
+                if request.headers.get('Origin') != settings.web_public_url:
+                    raise web.HTTPForbidden(text='请求来源无效')
+                if request.content_type != 'application/json':
+                    raise web.HTTPUnsupportedMediaType()
+            if request.path not in {'/', '/api/login'}:
+                try:
+                    session = auth.authenticate(request.cookies.get('session', ''))
+                except ValueError:
+                    raise web.HTTPUnauthorized(text='请先登录')
+                request['admin'] = session['user_id']
+                if request.method != 'GET' and not secrets.compare_digest(
+                        request.headers.get('X-CSRF-Token', ''), session['csrf']):
+                    raise web.HTTPForbidden(text='会话校验失败，请刷新页面')
+            response = await handler(request)
+        except (ValueError, TypeError, KeyError) as exc:
+            response = web.json_response({'error': str(exc)[:300]}, status=400)
+        except web.HTTPException as exc:
+            response = web.json_response({'error': exc.text}, status=exc.status)
+        response.headers.update({'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+                                 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY',
+                                 'Content-Security-Policy': "default-src 'none'; script-src 'nonce-" + request.get('nonce', '') + "'; style-src 'nonce-" + request.get('nonce', '') + "'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
+        return response
+
+    app = web.Application(middlewares=[guard], client_max_size=8192)
+
+    async def index(request):
+        request['nonce'] = secrets.token_urlsafe(24)
+        return web.Response(text=PAGE.replace('__NONCE__', request['nonce']), content_type='text/html')
+
+    async def login(request):
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError('请求必须是 JSON 对象')
+        code = data.get('code', '')
+        if not isinstance(code, str):
+            raise ValueError('登录码格式无效')
+        token = auth.login(code)
+        response = web.json_response({'ok': True})
+        response.set_cookie('session', token, httponly=True, secure=secure, samesite='Strict', max_age=28800, path='/')
+        return response
+
+    async def session(request):
+        record = auth.authenticate(request.cookies.get('session', ''))
+        return web.json_response({'user_id': record['user_id'], 'csrf': record['csrf']})
+
+    async def logout(request):
+        auth.logout(request.cookies.get('session', ''))
+        response = web.json_response({'ok': True})
+        response.del_cookie('session', path='/')
+        return response
+
+    def page_number(request):
+        page = int(request.query.get('page', '1'))
+        if not 1 <= page <= 1000000:
+            raise ValueError('页码无效')
+        return page
+
+    async def overview(request):
+        stats = users.statistics(request['admin'])
+        stats['tasks'] = {r['status']: r['n'] for r in store.connection.execute(
+            'SELECT status,COUNT(*) n FROM tasks GROUP BY status')}
+        return web.json_response(stats)
+
+    async def members(request):
+        rows = users.list_users(request['admin'], page_number(request))
+        for row in rows:
+            row['is_admin'] = users.is_admin(row['user_id'])
+        return web.json_response(rows)
+
+    async def tasks(request):
+        queue = request.query.get('queue', 'all')
+        if queue not in {'all', 'normal', 'white'}:
+            raise ValueError('队列无效')
+        where = '' if queue == 'all' else ' WHERE t.priority=' + ('1' if queue == 'white' else '0')
+        rows = store.connection.execute(
+            'SELECT t.id,m.title,m.source_id,t.user_id,t.status,t.priority,t.progress,t.created_at '
+            'FROM tasks t JOIN manga m ON m.id=t.manga_id' + where +
+            " ORDER BY CASE WHEN t.status IN ('COMPLETED','FAILED','CANCELLED') THEN 1 ELSE 0 END,t.priority DESC,t.queue_sequence LIMIT 20 OFFSET ?",
+            ((page_number(request) - 1) * 20,)).fetchall()
+        return web.json_response([dict(r) for r in rows])
+
+    async def history(request):
+        record = service.download_history(request.query.get('id', ''), request['admin'], page_number(request))
+        return web.json_response({'text': describe_history(record)})
+
+    async def action(request):
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError('请求必须是 JSON 对象')
+        actor = request['admin']
+        operation = data.get('action')
+        if operation in {'registration', 'invite_mode'}:
+            enabled = data.get('enabled')
+            if type(enabled) is not bool:
+                raise ValueError('开关值无效')
+            (users.set_registration if operation == 'registration' else users.set_invite_required)(actor, enabled)
+        elif operation in {'ban', 'unban'}:
+            users.set_blocked(actor, int(data['user_id']), operation == 'ban')
+        elif operation == 'cancel':
+            task = store.get(str(data['task_id']))
+            if not task:
+                raise ValueError('任务不存在')
+            store.request_cancel(task['id'], task['user_id'])
+        else:
+            raise ValueError('不支持的操作')
+        return web.json_response({'ok': True})
+
+    app.add_routes([web.get('/', index), web.post('/api/login', login), web.get('/api/session', session),
+                    web.post('/api/logout', logout), web.get('/api/overview', overview),
+                    web.get('/api/users', members), web.get('/api/tasks', tasks),
+                    web.get('/api/history', history), web.post('/api/action', action)])
+    return app
+
+
+async def serve(service, auth, settings):
+    runner = web.AppRunner(create_app(service, auth, settings), access_log=None)
+    try:
+        await runner.setup()
+        await web.TCPSite(runner, settings.web_host, settings.web_port).start()
+        await asyncio.Event().wait()
+    finally:
+        await runner.cleanup()

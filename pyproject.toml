@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Telegram-managed manga downloader for Komga"
 requires-python = ">=3.12"
 dependencies = [
+  "aiohttp>=3.10,<4",
   "cryptography>=44,<51",
   "aiogram>=3.13,<4",
   "Pillow>=12,<13",

@@ -187,6 +187,28 @@ class Store:
         return [dict(r) for r in self.connection.execute(
             "SELECT * FROM tasks" + where + " ORDER BY created_at DESC LIMIT 10 OFFSET ?", (*args, page * 10))]
 
+    def download_history(self, source, source_id, page=1):
+        if not 1 <= page <= 1_000_000:
+            raise ValueError("页码无效")
+        manga = self.connection.execute(
+            "SELECT id,title FROM manga WHERE source=? AND source_id=?", (source, source_id)).fetchone()
+        if not manga:
+            raise ValueError("该漫画暂无本项目的下载记录")
+        query = ("SELECT t.id,t.user_id,t.status,t.created_at,t.updated_at,t.retry_of,"
+                 "u.username,u.display_name FROM tasks t LEFT JOIN users u ON u.user_id=t.user_id "
+                 "WHERE t.manga_id=?")
+        first = self.connection.execute(query + " ORDER BY t.created_at,t.rowid LIMIT 1", (manga["id"],)).fetchone()
+        completed = self.connection.execute(
+            query + " AND t.status='COMPLETED' ORDER BY t.updated_at,t.rowid LIMIT 1", (manga["id"],)).fetchone()
+        total = self.connection.execute("SELECT COUNT(*) FROM tasks WHERE manga_id=?", (manga["id"],)).fetchone()[0]
+        rows = self.connection.execute(
+            query + " ORDER BY t.created_at DESC,t.rowid DESC LIMIT 5 OFFSET ?",
+            (manga["id"], (page - 1) * 5)).fetchall()
+        return {"source_id": source_id, "title": manga["title"], "page": page, "total": total,
+                "first": dict(first) if first else None,
+                "completed": dict(completed) if completed else None,
+                "tasks": [dict(row) for row in rows]}
+
     def chapters(self, task_id):
         return [dict(r) for r in self.connection.execute(
             "SELECT c.* FROM chapters c JOIN task_chapters tc ON tc.chapter_id=c.id "

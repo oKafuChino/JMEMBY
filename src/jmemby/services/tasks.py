@@ -30,6 +30,13 @@ class TaskService:
             raise ValueError("任务不存在")
         return task
 
+    def download_history(self, reference, user_id, page=1):
+        if not self.users:
+            raise ValueError("此功能仅管理员可用")
+        self.users.require_admin(user_id)
+        source_id = parse_reference(reference, self.domains)
+        return self.store.download_history(getattr(self.provider, "source", "jmcomic"), source_id, page)
+
     def retry(self, task_id, user_id, chat_id=None):
         task = self.get(task_id, user_id)
         if task["status"] != "FAILED":

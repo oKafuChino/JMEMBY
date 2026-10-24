@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BufferedInputFile, InputMediaPhoto
 from jmemby.bot.completion import completion_text, read_cover
 from html import escape
-from jmemby.bot.presentation import describe, normalize
+from jmemby.bot.presentation import describe, describe_history, normalize
 from jmemby.bot.access import chat_allows, parse_command
 
 from jmemby.domain.errors import JobError
@@ -57,7 +57,7 @@ class Authorization(BaseMiddleware):
         return await handler(event, data)
 
 
-def create_dispatcher(service, settings, accounts, diagnostics):
+def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
     router = Router()
     users = service.users
     guard = Authorization(users)
@@ -110,7 +110,8 @@ def create_dispatcher(service, settings, accounts, diagnostics):
                 if users.invite_required():
                     help_text += "\n当前为邀请注册：请向管理员获取邀请码"
                 if users.is_admin(user_id):
-                    help_text += "\n/status 服务状态\n/logs 最近 100 条应用日志"
+                    help_text += "\n/web 网页管理面板登录（仅私聊）"
+                    help_text += "\n/status 服务状态\n/logs 最近 100 条应用日志\n/who 漫画ID或链接 [页码] 查询下载来源（仅私聊）"
                     help_text += "\n管理员：/admin /users [页码]\n/registration on|off\n/ban 用户ID /unban 用户ID\n/disk 磁盘状态"
                     help_text += "\n/invite_mode on|off\n/invite_create [次数]\n/invites [页码]\n/invite_revoke 编号"
                     help_text += "\n群聊回复用户：/kk 授予注册资格，/white 设为白名单"
@@ -189,6 +190,19 @@ def create_dispatcher(service, settings, accounts, diagnostics):
                     await message.answer(describe(service.get(argument.strip(), user_id)))
                 else:
                     await message.answer(await diagnostics.status(user_id))
+            elif command == "/web":
+                users.require_admin(user_id)
+                if web_auth is None:
+                    raise ValueError("网页管理面板未启用，请配置 WEB_ENABLED 和 WEB_PUBLIC_URL")
+                code = web_auth.issue(user_id)
+                await message.answer(f"管理面板：{settings.web_public_url}\n一次性登录码（5 分钟有效）：\n{code}\n重新获取会使旧登录码失效。", protect_content=True)
+            elif command == "/who":
+                users.require_admin(user_id)
+                parts = argument.split()
+                if not 1 <= len(parts) <= 2:
+                    raise ValueError("用法：/who 漫画ID或链接 [页码]")
+                history = service.download_history(parts[0], user_id, int(parts[1]) if len(parts) == 2 else 1)
+                await message.answer(describe_history(history))
             elif command == "/logs":
                 content = diagnostics.recent_logs(user_id)
                 await message.answer_document(BufferedInputFile(content.encode("utf-8"), filename="jmemby-recent-100.log"),

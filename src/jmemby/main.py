@@ -33,7 +33,10 @@ async def run(settings, db_path, recent_logs):
     users = UserService(store, settings.allowed_user_ids)
     accounts = AccountService(users, komga, db_path.parent / "account.key")
     diagnostics = Diagnostics(users, worker, komga, recent_logs)
-    dispatcher = create_dispatcher(TaskService(store, provider, settings.provider_domains, users), settings, accounts, diagnostics)
+    service = TaskService(store, provider, settings.provider_domains, users)
+    from jmemby.web.auth import AdminAuth
+    web_auth = AdminAuth(users) if settings.web_enabled else None
+    dispatcher = create_dispatcher(service, settings, accounts, diagnostics, web_auth)
     heartbeat = db_path.parent / "heartbeat"
 
     async def health():
@@ -46,6 +49,9 @@ async def run(settings, db_path, recent_logs):
             asyncio.create_task(notifications(bot, store, settings.komga_public_url, settings.storage_root)),
             asyncio.create_task(health()), asyncio.create_task(dispatcher.start_polling(bot))]
     try:
+        if settings.web_enabled:
+            from jmemby.web.server import serve
+            jobs.append(asyncio.create_task(serve(service, web_auth, settings)))
         done, _ = await asyncio.wait(jobs, return_when=asyncio.FIRST_COMPLETED)
         for job in done:
             job.result()

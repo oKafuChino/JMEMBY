@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import os
 import json
 import sys
+from urllib.parse import urlsplit
 
 
 def _int(name: str, default: int) -> int:
@@ -35,6 +36,10 @@ class Settings:
     max_pixels: int = 50_000_000
     max_chapter_pages: int = 2000
     max_task_bytes: int = 10 * 1024**3
+    web_enabled: bool = False
+    web_host: str = "127.0.0.1"
+    web_port: int = 8080
+    web_public_url: str = "http://localhost:8080"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -76,9 +81,21 @@ class Settings:
             max_pixels=_int("MAX_PIXELS", 50_000_000),
             max_chapter_pages=_int("MAX_CHAPTER_PAGES", 2000),
             max_task_bytes=_int("MAX_TASK_BYTES", 10 * 1024**3),
+            web_enabled=os.getenv("WEB_ENABLED", "false").lower() in {"true", "1", "yes"},
+            web_host=os.getenv("WEB_HOST", "127.0.0.1"),
+            web_port=_int("WEB_PORT", 8080),
+            web_public_url=os.getenv("WEB_PUBLIC_URL", "http://localhost:8080").rstrip("/"),
         )
 
     def __post_init__(self):
+        if not 1 <= self.web_port <= 65535:
+            raise ValueError("WEB_PORT must be between 1 and 65535")
+        if self.web_enabled:
+            url = urlsplit(self.web_public_url)
+            if (url.scheme not in {"https", "http"} or not url.hostname or url.username or url.password
+                    or url.path or url.query or url.fragment
+                    or (url.scheme == "http" and url.hostname not in {"localhost", "127.0.0.1", "::1"})):
+                raise ValueError("WEB_PUBLIC_URL must be an HTTPS origin, or localhost HTTP for an SSH tunnel")
         for name in ("download_concurrency", "retry_max_attempts", "operation_timeout", "max_page_bytes", "max_pixels", "max_chapter_pages", "max_task_bytes"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
