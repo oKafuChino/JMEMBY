@@ -19,8 +19,9 @@ from jmemby.distributed.resources import memory_limit_mb, use_low_memory
 from jmemby.domain.errors import JobError
 from jmemby.domain.models import Page
 from jmemby.providers.builtin import JmProvider
+from jmemby.providers.low_memory import LowMemoryJmProvider
 from jmemby.runtime import JsonFormatter, instance_lock
-from jmemby.storage.cbz import staged_pages, validate_image
+from jmemby.storage.cbz import staged_pages, validate_image, validate_image_file
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +49,14 @@ class Agent:
         self.memory_mb = memory_limit_mb()
         self.low_memory = use_low_memory(settings.low_memory, self.memory_mb)
         self.batch_size = 1 if self.low_memory else 8
-        self.provider = provider or JmProvider(
+        provider_class = LowMemoryJmProvider if self.low_memory else JmProvider
+        self.provider = provider or provider_class(
             json.dumps([sys.executable, '-m', 'jmemby.providers.jm_adapter']), settings.operation_timeout)
         self.root = Path(settings.work_dir).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
-        logger.info('agent_resources memory_limit_mb=%s low_memory=%s batch_pages=%s',
-                    self.memory_mb, self.low_memory, self.batch_size)
+        logger.info('agent_resources memory_limit_mb=%s low_memory=%s batch_pages=%s pipeline=%s',
+                    self.memory_mb, self.low_memory, self.batch_size,
+                    'split_decode' if isinstance(self.provider, LowMemoryJmProvider) else 'standard')
 
     async def request(self, session, method, path, **kwargs):
         # Never forward the bearer token to redirects. TLS verification stays enabled.
@@ -121,7 +124,8 @@ class Agent:
                 reserve_mb = 64 if self.low_memory else 512
             reserve = reserve_mb * 1024**2
             # Small nodes recycle the SDK subprocess after every uploaded page.
-            if shutil.disk_usage(self.root).free < reserve + min(len(pages), self.batch_size * concurrency) * max_bytes:
+            copies = 2 if isinstance(self.provider, LowMemoryJmProvider) else 1
+            if shutil.disk_usage(self.root).free < reserve + min(len(pages), self.batch_size * concurrency) * max_bytes * copies:
                 raise JobError('DISK_LOW', 'Agent has insufficient temporary disk space')
             with tempfile.TemporaryDirectory(prefix='chapter-', dir=self.root) as directory:
                 stage = Path(directory)
@@ -138,7 +142,13 @@ class Agent:
                             if len(files) != 1:
                                 raise JobError('BAD_IMAGE', 'Missing page')
                             path = files[0]
-                            await asyncio.to_thread(validate_image, path, max_bytes, max_pixels)
+                            if isinstance(self.provider, LowMemoryJmProvider):
+                                # Decoder subprocess already fully validated the page;
+                                # the controller independently validates every upload.
+                                # Keep pixel allocations out of this long-lived process.
+                                validate_image_file(path, max_bytes)
+                            else:
+                                await asyncio.to_thread(validate_image, path, max_bytes, max_pixels)
                             received += path.stat().st_size
                             if received > job['budget']:
                                 raise JobError('SIZE_LIMIT', 'Chapter budget exceeded')

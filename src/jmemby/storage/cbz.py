@@ -9,7 +9,6 @@ from pathlib import Path
 import re
 import zipfile
 import tempfile
-from PIL import Image
 
 from jmemby.domain.errors import JobError
 
@@ -47,11 +46,18 @@ def contained(root: Path, relative: str) -> Path:
     return target
 
 
-def validate_image(path: Path, max_bytes=30 * 1024 * 1024, max_pixels=50_000_000) -> str:
+def validate_image_file(path: Path, max_bytes=30 * 1024 * 1024) -> None:
+    """Cheap file checks; pixel validation must run in a decoder or controller."""
     if path.is_symlink():
         raise JobError("INVALID_PATH", "拒绝读取符号链接图片")
     if not path.is_file() or path.stat().st_size > max_bytes or path.stat().st_size == 0:
         raise JobError("BAD_IMAGE", "图片缺失或超过大小限制")
+
+
+def validate_image(path: Path, max_bytes=30 * 1024 * 1024, max_pixels=50_000_000) -> str:
+    from PIL import Image
+
+    validate_image_file(path, max_bytes)
     try:
         with Image.open(path) as picture:
             if picture.width * picture.height > max_pixels:
@@ -73,6 +79,8 @@ def identity(manga, chapter):
 
 
 def validate_cbz(path, manga, chapter, max_bytes=30 * 1024 * 1024, max_pixels=50_000_000):
+    from PIL import Image
+
     try:
         with zipfile.ZipFile(path) as archive:
             manifest = archive.getinfo("jmemby.json")

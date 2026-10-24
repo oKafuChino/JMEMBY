@@ -12,6 +12,7 @@ import errno
 import tempfile
 import warnings
 from jmemby.domain.models import normalize_tags
+from jmemby.domain.errors import JobError
 
 
 class StageError(Exception):
@@ -39,7 +40,10 @@ def classify_error(exc, phase):
     lower = " ".join(names).lower()
     statuses = [getattr(getattr(item, "response", None), "status_code", None) for item in chain]
     status = next((s for s in statuses if isinstance(s, int) and 100 <= s <= 599), None)
-    if any(isinstance(item, MemoryError) for item in chain):
+    job_error = next((item for item in chain if isinstance(item, JobError)), None)
+    if job_error is not None:
+        code = job_error.code
+    elif any(isinstance(item, MemoryError) for item in chain):
         code = "MEMORY_LIMIT"
     elif any(name in ('DecompressionBombWarning', 'DecompressionBombError') for name in names):
         code = "IMAGE_LIMIT"
@@ -79,17 +83,24 @@ def classify_error(exc, phase):
     }}}
 
 
-def make_client():
+def make_client(low_memory=False):
     from jmcomic import JmOption
     options = {"log": False, "client": {"impl": "api", "retry_times": 0,
                "postman": {"meta_data": {"timeout": 30}}}}
     domains = [s.strip() for s in os.getenv("JM_API_DOMAINS", "").split(",") if s.strip()]
     if domains:
         options["client"]["domain"] = domains
-    return JmOption.construct(options).new_jm_client()
+    if low_memory:
+        # requests iter_content pulls on demand. curl_cffi streaming can queue
+        # incoming body chunks in a background thread on a slow disk.
+        options['client']['postman']['type'] = 'requests'
+    option = JmOption.construct(options)
+    if low_memory:
+        option.client.postman.meta_data.src_dict.pop('impersonate', None)
+    return option.new_jm_client()
 
 
-def initialize_client():
+def initialize_client(low_memory=False):
     """Retry only client construction, never replay a successful download.
 
     The SDK's internal retries remain disabled. Initialization has at most three
@@ -98,7 +109,7 @@ def initialize_client():
     """
     for attempt in range(3):
         try:
-            return make_client()
+            return make_client(low_memory=True) if low_memory else make_client()
         except Exception as exc:
             code = classify_error(exc, "client_init")["error"]["code"]
             if attempt == 2 or code not in {"TIMEOUT", "NETWORK", "SERVER_ERROR", "JM_RESPONSE_UNEXPECTED"}:
@@ -118,6 +129,63 @@ def image_pixel_limit(max_pixels):
             yield
     finally:
         Image.MAX_IMAGE_PIXELS = previous
+
+
+def download_raw(client, image, destination, limit):
+    """Stream encoded bytes; do not use SDK wrappers which access resp.content."""
+    from jmcomic import JmImageTool, JmModuleConfig
+    from urllib.parse import urljoin, urlsplit
+
+    if type(limit) is not int or limit <= 0:
+        raise ValueError('Invalid size limit')
+    url = image.download_url
+    segments = JmImageTool.get_num_by_url(int(image.scramble_id), url.split('?', 1)[0])
+    kwargs = {'headers': JmModuleConfig.new_html_headers()}
+    # Preserve the API client's image-specific headers and configured transport.
+    client.update_request_with_specify_domain(kwargs, None, True)
+    kwargs.update(stream=True, allow_redirects=False)
+    # requests' automatic redirects read intermediate bodies in full. Follow a
+    # bounded number ourselves, closing each unread response before proceeding.
+    for redirects in range(6):
+        response = client.postman.get(url, **kwargs)
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            break
+        try:
+            location = response.headers.get('Location')
+            target = urljoin(url, location) if location else ''
+            parsed = urlsplit(target)
+            if (redirects == 5 or parsed.scheme not in {'http', 'https'} or not parsed.hostname
+                    or parsed.username is not None or parsed.password is not None
+                    or (urlsplit(url).scheme == 'https' and parsed.scheme != 'https')):
+                raise JobError('NETWORK', 'Invalid image redirect', True)
+            url = target
+        finally:
+            response.close()
+    created = False
+    try:
+        response.raise_for_status()
+        if response.status_code != 200:
+            raise JobError('NETWORK', 'Unexpected image response', True)
+        length = response.headers.get('Content-Length')
+        if length is not None and int(length) > limit:
+            raise JobError('SIZE_LIMIT', 'Encoded page exceeds byte limit')
+        received = 0
+        with destination.open('xb') as output:
+            created = True
+            for chunk in response.iter_content(chunk_size=65536):
+                received += len(chunk)
+                if received > limit:
+                    raise JobError('SIZE_LIMIT', 'Encoded page exceeds byte limit')
+                output.write(chunk)
+        if not received:
+            raise JobError('BAD_IMAGE', 'Empty image response')
+        return {'segments': segments}
+    except BaseException:
+        if created:
+            destination.unlink(missing_ok=True)
+        raise
+    finally:
+        response.close()
 
 
 def handle(request, client):
@@ -173,7 +241,7 @@ def handle(request, client):
     if operation == "pages":
         photo = at_stage("chapter_pages", client.get_photo_detail, request["chapter_id"])
         return {"pages": [f"jm:{photo.id}:{index}" for index in range(len(photo))]}
-    if operation == "download":
+    if operation in {"download", "download_raw"}:
         match = re.fullmatch(r"jm:([0-9]+):([0-9]+)", request["url"])
         if not match:
             raise ValueError("Invalid page reference")
@@ -184,6 +252,8 @@ def handle(request, client):
         limit = int(request["max_bytes"])
         if limit <= 0:
             raise ValueError("Invalid size limit")
+        if operation == 'download_raw':
+            return at_stage('image_transfer', download_raw, client, image, destination, limit)
         # The SDK performs JM image descrambling. Use an image extension because
         # Pillow-based SDK decoders may infer output format from the path.
         descriptor, decoded_name = tempfile.mkstemp(prefix=".decode-", suffix=".jpg", dir=destination.parent)
@@ -210,7 +280,7 @@ def main():
         request = json.loads(sys.stdin.readline())
         phase = "client_init"
         with redirect_stdout(sys.stderr):
-            client = initialize_client()
+            client = initialize_client(low_memory=True) if request.get('operation') == 'download_raw' else initialize_client()
             phase = request.get("operation", "unknown")
             result = handle(request, client)
     except Exception as exc:

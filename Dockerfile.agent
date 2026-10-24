@@ -4,7 +4,7 @@ ARG APP_GID=1000
 RUN groupadd --gid ${APP_GID} agent && useradd --uid ${APP_UID} --gid agent --create-home agent
 WORKDIR /app
 # The agent installs only its download/transport dependencies, no Bot or Komga service.
-RUN pip install --no-cache-dir 'aiohttp>=3.10,<4' 'Pillow>=12,<13' 'jmcomic>=2.5,<3'
+RUN pip install --no-cache-dir 'aiohttp>=3.10,<4' 'Pillow>=12,<13' 'jmcomic>=2.5,<3' 'requests>=2.32,<3'
 COPY src/jmemby/__init__.py ./src/jmemby/__init__.py
 COPY src/jmemby/domain ./src/jmemby/domain
 COPY src/jmemby/providers ./src/jmemby/providers

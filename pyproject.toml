@@ -9,6 +9,7 @@ dependencies = [
   "aiogram>=3.13,<4",
   "Pillow>=12,<13",
   "jmcomic>=2.5,<3",
+  "requests>=2.32,<3",
 ]
 
 [build-system]

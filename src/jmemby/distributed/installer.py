@@ -11,10 +11,11 @@ import tarfile
 AGENT_FILES = (
     '__init__.py', 'runtime.py', 'domain/__init__.py', 'domain/models.py', 'domain/errors.py',
     'providers/__init__.py', 'providers/command.py', 'providers/builtin.py', 'providers/jm_adapter.py',
+    'providers/low_memory.py', 'providers/image_decoder.py',
     'storage/__init__.py', 'storage/cbz.py', 'distributed/__init__.py', 'distributed/config.py',
     'distributed/agent.py', 'distributed/resources.py',
 )
-REQUIREMENTS = "aiohttp>=3.10,<4\nPillow>=12,<13\njmcomic>=2.5,<3\n"
+REQUIREMENTS = "aiohttp>=3.10,<4\nPillow>=12,<13\njmcomic>=2.5,<3\nrequests>=2.32,<3\n"
 
 
 @lru_cache(maxsize=1)
