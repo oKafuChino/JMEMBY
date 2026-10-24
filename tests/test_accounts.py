@@ -39,15 +39,60 @@ class AccountTests(unittest.IsolatedAsyncioTestCase):
         self.store.close()
         self.temp.cleanup()
 
-    async def test_creation_concurrent_idempotence_and_secret_delivery(self):
+    async def test_creation_concurrent_idempotence_and_encrypted_password_retention(self):
         first, second = await asyncio.gather(self.accounts.ensure(2), self.accounts.ensure(2))
         self.assertEqual(first, second)
         self.assertEqual(len(self.bridge.calls), 1)
         self.assertEqual(first["email"], "tg2@jmemby.local")
         self.assertNotIn(first["password"], str(self.accounts.get(2)))
-        self.accounts.delivered(2)
-        self.assertIsNone((await self.accounts.ensure(2))["password"])
-        self.assertIsNone(self.accounts.get(2)["password_encrypted"])
+        self.assertEqual((await self.accounts.ensure(2))["password"], first['password'])
+        self.assertIsNotNone(self.accounts.get(2)["password_encrypted"])
+        self.assertEqual(len(self.bridge.calls), 1)
+        restarted = AccountService(self.users, self.bridge, self.root / 'account.key')
+        self.assertEqual(restarted.credentials(2), {
+            'status': 'READY', 'email': first['email'], 'password': first['password']})
+        self.assertNotIn('password_encrypted', restarted.credentials(2))
+
+    async def test_credentials_are_per_user_and_blocked_users_cannot_decrypt(self):
+        first = await self.accounts.ensure(2)
+        self.users.register(3)
+        second = await self.accounts.ensure(3)
+        self.assertNotEqual(first['password'], second['password'])
+        self.assertEqual(self.accounts.credentials(2)['password'], first['password'])
+        self.assertEqual(self.accounts.credentials(3)['password'], second['password'])
+        self.users.set_blocked(1, 2, True)
+        with patch.object(self.accounts, '_password') as decrypt:
+            for user_id in (2, 99):
+                with self.assertRaises(ValueError):
+                    self.accounts.credentials(user_id)
+            decrypt.assert_not_called()
+        self.assertIsNone(self.accounts.credentials(1))
+
+    async def test_legacy_cleared_password_is_not_recreated_or_reset(self):
+        await self.accounts.ensure(2)
+        self.store.connection.execute('UPDATE komga_accounts SET password_encrypted=NULL WHERE user_id=2')
+        self.assertIsNone(self.accounts.credentials(2)['password'])
+        self.assertIsNone((await self.accounts.ensure(2))['password'])
+        self.assertEqual(len(self.bridge.calls), 1)
+
+    async def test_pending_credentials_are_not_disclosed(self):
+        self.bridge.fail = True
+        with self.assertRaises(JobError):
+            await self.accounts.ensure(2)
+        self.assertEqual(self.accounts.credentials(2)['status'], 'FAILED')
+        self.assertIsNone(self.accounts.credentials(2)['password'])
+
+    async def test_wrong_key_raises_safe_error_without_remote_password_reset(self):
+        from cryptography.fernet import Fernet
+        account = await self.accounts.ensure(2)
+        self.accounts.cipher = Fernet(Fernet.generate_key())
+        with self.assertRaises(JobError) as caught:
+            self.accounts.credentials(2)
+        self.assertEqual(caught.exception.code, 'ACCOUNT_KEY')
+        self.assertNotIn(account['password'], str(caught.exception))
+        with self.assertRaises(JobError):
+            await self.accounts.ensure(2)
+        self.assertEqual(len(self.bridge.calls), 1)
 
     async def test_retry_after_restart_uses_same_password(self):
         self.bridge.fail = True

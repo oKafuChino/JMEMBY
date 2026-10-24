@@ -123,11 +123,17 @@ class CommunityTests(unittest.IsolatedAsyncioTestCase):
         self.users.admin_ids=frozenset()
         with self.assertRaises(ValueError):self.community.report(3,'42')
 
-    def test_profile_shows_email_and_public_address_without_credentials(self):
-        reading={'status':'READY','email':'reader@example.com','password_encrypted':'SECRET','password':'SECRET'}
+    def test_profile_shows_own_password_but_never_ciphertext(self):
+        reading={'status':'READY','email':'reader@example.com','password_encrypted':'CIPHERTEXT','password':'test-password<&>'}
         text=profile_text(2,'已注册',reading,'https://read.example.com')
         self.assertIn('reader@example.com',text);self.assertIn('https://read.example.com',text)
-        self.assertNotIn('SECRET',text)
+        self.assertIn('阅读密码：test-password<&>',text)
+        self.assertNotIn('CIPHERTEXT',text)
+        self.assertIn('初始密码', text)
+        reading['password'] = None
+        self.assertIn('未保存，无法回显', profile_text(2, '已注册', reading, ''))
+        reading.update(status='FAILED', password='pending-password')
+        self.assertNotIn('pending-password', profile_text(2, '已注册', reading, ''))
         self.assertIn('尚未开通',profile_text(2,'已注册',None,''))
         self.assertEqual(MENU['👤 我的账号'],'/my')
         for command in ('/queue','/status','/cancel','/retry','/library'):

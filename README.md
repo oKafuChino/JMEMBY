@@ -131,13 +131,14 @@ docker compose up -d app
 - 注册成功后 Bot 私聊发送邮箱与初始密码；首次登录后请在 Komga 修改密码。
 - 老用户点击「🔑 阅读账号」或发送 `/account` 可补开账号。
 - Komga 不可用时保留 Bot 注册，显示开通失败；重试不重复消耗邀请码。
-- 初始密码发送前加密暂存，成功发送后从数据库清除；此后 `/account` 仅显示邮箱。丢失密码请联系管理员在 Komga 重置。
+- 初始密码加密保存在数据库中，发送成功后继续保留。用户私聊 `/my`、`/me`、“👤 我的账号”或 `/account` 可再次查看自己的阅读账号和初始密码；群聊不显示，被封禁用户不显示账号详情。
+- 此处显示的是 Bot 开通时生成的密码。在 Komga 中修改或重置密码不会同步回 Bot；请使用修改后的密码。旧版已清除的密码无法恢复，会提示“未保存，无法回显”，不会自动重置远端账号。
 - 如果请求结果丢失，重试会用同一密码确认远端账号归属；不会重置或接管已有同名账号。
 - `/ban` 仅禁用 Bot，并不撤销已经创建的 Komga 账号权限。需停止阅读访问时，管理员应同时在 Komga 管理该账号。
 
 新增底部菜单可直达首页、注册、我的账号、阅读账号、任务和阅读入口；管理员额外显示管理面板和用户列表。任务状态使用中文和图标提示。
 
-升级启动时自动将数据库 schema 1–4 迁移到 5，保留原任务、用户、账号与漫画记录，新增定时计划和任务来源。升级前备份数据库；降级旧代码需要恢复升级前备份。账号加密密钥位于 `data/app/account.key`，必须与数据库一起备份；`update.sh` 备份整个 `data/app`，单独的数据库备份命令不包含该密钥。不要删除密钥，否则尚未交付的密码无法恢复。
+升级启动时自动将数据库 schema 1–4 迁移到 5，保留原任务、用户、账号与漫画记录，新增定时计划和任务来源。升级前备份数据库；降级旧代码需要恢复升级前备份。账号加密密钥位于 `data/app/account.key`，必须与数据库一起备份；`update.sh` 备份整个 `data/app`，单独的数据库备份命令不包含该密钥。不要删除密钥，否则已保存的初始密码无法解密。本次密码回显复用现有加密字段，无需新增数据库迁移。
 
 账号管理接口根据 [Komga 官方 UserController](https://github.com/gotson/komga/blob/master/komga/src/main/kotlin/org/gotson/komga/interfaces/api/rest/UserController.kt) 和 [UserCreationDto](https://github.com/gotson/komga/blob/master/komga/src/main/kotlin/org/gotson/komga/interfaces/api/rest/dto/UserCreationDto.kt) 实现，使用 `/api/v2/users`。已完成离线测试，仍需在实际部署版本验收。
 

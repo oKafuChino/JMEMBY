@@ -1,4 +1,4 @@
-"""Durable account creation with encrypted credentials until private delivery."""
+"""Durable account creation with encrypted credentials for private self-service."""
 import asyncio
 import os
 import secrets
@@ -36,6 +36,23 @@ class AccountService:
         row = self.store.connection.execute("SELECT * FROM komga_accounts WHERE user_id=?", (user_id,)).fetchone()
         return dict(row) if row else None
 
+    def _password(self, record):
+        if not record['password_encrypted']:
+            return None
+        try:
+            return self.cipher.decrypt(record['password_encrypted'].encode()).decode()
+        except InvalidToken as exc:
+            raise JobError('ACCOUNT_KEY', '账号密钥不匹配，请联系管理员恢复备份') from exc
+
+    def credentials(self, user_id):
+        """Only call with the authenticated Telegram sender in a private chat."""
+        self.users.require_member(user_id)
+        record = self.get(user_id)
+        if not record:
+            return None
+        return {'status': record['status'], 'email': record['email'],
+                'password': self._password(record) if record['status'] == 'READY' else None}
+
     async def ensure(self, user_id):
         async with self.locks[user_id % len(self.locks)]:
             self.users.require_member(user_id)
@@ -50,22 +67,19 @@ class AccountService:
                 record = self.get(user_id)
             if record["status"] != "READY":
                 try:
-                    password = self.cipher.decrypt(record["password_encrypted"].encode()).decode()
+                    password = self._password(record)
+                    if not password:
+                        raise JobError('ACCOUNT_PASSWORD', '阅读账号缺少已保存的密码，请联系管理员处理')
                     result = await self.bridge.request({"operation": "provision_user", "email": record["email"], "password": password})
                     if not isinstance(result.get("id"), str) or not result["id"] or result.get("email") != record["email"]:
                         raise JobError("KOMGA_PROTOCOL", "账号创建响应不完整")
                     self.store.connection.execute("UPDATE komga_accounts SET remote_id=?,status='READY',error_code=NULL WHERE user_id=?",
                                                   (result["id"], user_id))
-                except InvalidToken as exc:
-                    raise JobError("ACCOUNT_KEY", "账号密钥不匹配，请联系管理员恢复备份") from exc
                 except JobError as exc:
                     self.store.connection.execute("UPDATE komga_accounts SET status='FAILED',error_code=? WHERE user_id=?", (exc.code, user_id))
                     raise
             # A ban during the network request prevents credential disclosure.
             self.users.require_member(user_id)
             record = self.get(user_id)
-            password = self.cipher.decrypt(record["password_encrypted"].encode()).decode() if record["password_encrypted"] else None
+            password = self._password(record)
             return {"email": record["email"], "password": password}
-
-    def delivered(self, user_id):
-        self.store.connection.execute("UPDATE komga_accounts SET password_encrypted=NULL WHERE user_id=? AND status='READY'", (user_id,))

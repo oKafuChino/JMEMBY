@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from jmemby.bot.access import chat_allows, jm_reply_options, parse_command
 from jmemby.db.store import Store
@@ -137,7 +137,8 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         from jmemby.services.membership import MembershipService
         self.service.membership = MembershipService(self.store, self.users, self.bot)
         self.settings = SimpleNamespace(komga_public_url='https://read.example.com', storage_root=self.directory.name)
-        self.accounts = SimpleNamespace(get=lambda user_id: {'status':'READY','email':f'reader{user_id}@example.com'})
+        self.accounts = SimpleNamespace(credentials=Mock(side_effect=lambda user_id: {
+            'status': 'READY', 'email': f'reader{user_id}@example.com', 'password': f'test-password-{user_id}'}))
         self.dispatcher = create_dispatcher(self.service, self.settings, self.accounts, None)
         self.pending = self.message(None, user_id=123456, is_bot=True)
         self.pending = self.pending.model_copy(update={"message_id": 99})
@@ -340,6 +341,7 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         await self.send('/my',kind='private',chat_id=2)
         self.assertIn('reader2@example.com',self.answer.call_args.args[0])
         self.assertIn('https://read.example.com',self.answer.call_args.args[0])
+        self.assertIn('阅读密码：test-password-2', self.answer.call_args.args[0])
         await self.send('/like 42',kind='private',chat_id=2)
         self.assertIn('点赞成功',self.answer.call_args.args[0])
         await self.send('/like 42',kind='private',chat_id=2)
@@ -354,6 +356,38 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
             await self.send(text,kind='private',chat_id=2)
             self.assertIn('用法',self.answer.call_args.args[0])
         self.provider.get_manga.assert_not_awaited()
+
+    async def test_account_password_is_private_self_only_and_copyable(self):
+        for command in ('/my', '/me', '/account', '👤 我的账号', '🔑 阅读账号'):
+            await self.send(command)
+        self.accounts.credentials.assert_not_called()
+        self.answer.assert_not_awaited()
+        for command in ('/my', '/me', '👤 我的账号', '/my 3'):
+            await self.send(command, kind='private', chat_id=2)
+            self.accounts.credentials.assert_called_with(2)
+            self.assertIn('阅读密码：test-password-2', self.answer.call_args.args[0])
+            self.assertNotIn('test-password-3', self.answer.call_args.args[0])
+            self.assertIsNone(self.answer.call_args.kwargs['parse_mode'])
+            self.assertFalse(self.answer.call_args.kwargs['protect_content'])
+        self.accounts.credentials.reset_mock()
+        self.users.set_blocked(1, 2, True)
+        await self.send('/my', kind='private', chat_id=2)
+        self.assertIn('已被禁用', self.answer.call_args.args[0])
+        self.assertNotIn('test-password', self.answer.call_args.args[0])
+        await self.send('/my', kind='private', chat_id=3, user_id=3)
+        self.assertIn('未注册', self.answer.call_args.args[0])
+        self.accounts.credentials.assert_not_called()
+
+    async def test_account_repeats_password_with_html_escaping(self):
+        self.accounts.ensure = AsyncMock(return_value={'email': 'reader@example.com', 'password': 'test<&>password'})
+        for _ in range(2):
+            await self.send('/account', kind='private', chat_id=2)
+        cards = [call for call in self.answer.call_args_list if call.args[0].startswith('📚')]
+        self.assertEqual(len(cards), 2)
+        for call in cards:
+            self.assertIn('<code>test&lt;&amp;&gt;password</code>', call.args[0])
+            self.assertFalse(call.kwargs['protect_content'])
+            self.assertEqual(call.kwargs['parse_mode'], 'HTML')
 
     async def test_published_command_menus_remove_legacy_commands(self):
         from jmemby.bot.commands import configure_commands

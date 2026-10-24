@@ -99,11 +99,10 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
             return
         text = f"📚 <b>你的 Komga 阅读账号</b>\n\n登录邮箱：<code>{escape(account['email'])}</code>"
         if account["password"]:
-            text += f"\n初始密码：<code>{escape(account['password'])}</code>\n\n请保存密码，登录后在 Komga 修改。密码发送成功后不会在 Bot 中再次展示。"
+            text += f"\n初始密码：<code>{escape(account['password'])}</code>\n\n可通过 /my 或 /account 再次查看。若已在 Komga 修改密码，请使用修改后的密码；Bot 不会同步该修改。"
         else:
-            text += "\n\n初始密码已发送。忘记密码请联系管理员在 Komga 重置。"
+            text += "\n阅读密码：未保存，无法回显（旧版交付后会清除密码）。\n忘记密码请联系管理员在 Komga 重置。"
         await message.answer(text, parse_mode="HTML", protect_content=False)
-        accounts.delivered(user_id)
         if settings.komga_public_url:
             await message.answer("阅读入口：" + settings.komga_public_url)
 
@@ -146,13 +145,14 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
             elif command in {"/my", "/me"}:
                 account = users.get(user_id)
                 status = "管理员" if users.is_admin(user_id) else "未注册" if not account else "已禁用" if account["blocked"] else "已注册"
-                reading = accounts.get(user_id)
                 status += f"；组别：{users.group_label(user_id)}"
                 # Blocked users can view status but receive no reading account details.
                 if account and account['blocked'] and not users.is_admin(user_id):
                     await message.answer(f"用户 ID：{user_id}\n账号已被禁用，请联系管理员", reply_markup=menu(user_id))
                 else:
-                    await message.answer(profile_text(user_id, status, reading, settings.komga_public_url, users.is_admin(user_id)), reply_markup=menu(user_id))
+                    reading = accounts.credentials(user_id) if account or users.is_admin(user_id) else None
+                    await message.answer(profile_text(user_id, status, reading, settings.komga_public_url, users.is_admin(user_id)),
+                                         reply_markup=menu(user_id), parse_mode=None, protect_content=False)
             elif command == "/admin":
                 stats = users.statistics(user_id)
                 await message.answer(

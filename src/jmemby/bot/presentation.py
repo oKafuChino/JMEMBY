@@ -19,11 +19,18 @@ def normalize(text):
 def profile_text(user_id, status, reading, public_url, is_admin=False):
     ready = bool(reading and reading['status'] == 'READY')
     email = reading['email'] if ready else '尚未开通，请使用 /account 领取或重试'
+    password = '尚未开通'
+    note = ''
+    if ready:
+        password = reading.get('password') or '未保存，无法回显；忘记密码请联系管理员重置'
+        note = ('\n\n此处显示 Bot 开通账号时的初始密码。若已在 Komga 修改，'
+                '请使用修改后的密码；Bot 不会同步该修改。') if reading.get('password') else ''
     if is_admin and not ready:
         email = '请使用已有 Komga 管理账号'
+        password = '请使用已有 Komga 管理账号的密码'
     return (f"👤 我的账号\n\n用户 ID：{user_id}\nBot 状态：{status}\n"
-            f"阅读账号：{email}\n服务器地址：{public_url or '尚未配置，请联系管理员'}\n\n"
-            "初始密码只在 /account 首次交付时展示；忘记密码请联系管理员重置。")
+            f"阅读账号：{email}\n阅读密码：{password}\n"
+            f"服务器地址：{public_url or '尚未配置，请联系管理员'}{note}")
 
 
 def describe(task):
