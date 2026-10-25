@@ -31,10 +31,15 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(parse_command("/jm@TestBot 42"), ("/jm", "TestBot", "42"))
         self.assertEqual(parse_command("/jm"), ("/jm", "", ""))
 
-    def test_groups_only_accept_jm_and_download_buttons(self):
+    def test_groups_accept_download_community_and_legacy_download_buttons(self):
         for kind in ("group", "supergroup"):
-            self.assertTrue(chat_allows(kind, -100, 1, "/jm"))
-            for command in ("/download", "/register", "/account", "/admin", "/queue", "/help", "42", "📋 我的任务", "/jmfoo"):
+            for command in ('/jm', '/like', '/report', '/random', '/rank'):
+                self.assertTrue(chat_allows(kind, -100, 1, command))
+                parsed, recipient, _ = parse_command(command + '@TestBot')
+                self.assertEqual(recipient, 'TestBot')
+                self.assertTrue(chat_allows(kind, -100, 1, parsed))
+                self.assertFalse(chat_allows('channel', -100, 1, command))
+            for command in ("/download", "/register", "/my", "/account", "/admin", "/queue", "/help", "42", "📋 我的任务", "/jmfoo", '/likefoo', '🎲 随机推荐'):
                 self.assertFalse(chat_allows(kind, -100, 1, command))
             for action in ("confirm", "dismiss"):
                 self.assertTrue(chat_allows(kind, -100, 1, action=action))
@@ -198,8 +203,12 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.users.get(4))
         self.provider.get_manga.assert_not_awaited()
         self.users.grant(1, 2, True)
-        await self.send('/jm 42')
-        self.assertIn('先加入', self.answer.call_args.args[0])
+        for command in ('/jm 42', '/like 42', '/report 42', '/random', '/rank'):
+            for kind in ('group', 'supergroup'):
+                await self.send(command, kind=kind)
+                self.assertIn('先加入', self.answer.call_args.args[0])
+        self.assertEqual(self.store.connection.execute('SELECT COUNT(*) FROM manga_likes').fetchone()[0], 0)
+        self.assertEqual(self.store.connection.execute('SELECT COUNT(*) FROM manga_reports').fetchone()[0], 0)
         token = self.store.confirmation(manga(), 2, -100)
         await self.click('confirm', token)
         self.assertIn('先加入', self.alert.call_args.args[0])
@@ -331,12 +340,11 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.get(task['id'])['status'],'QUEUED')
         self.provider.get_manga.assert_not_awaited()
 
-    async def test_my_and_new_community_commands_are_private(self):
+    async def test_private_community_commands_and_group_account_boundary(self):
         task=self.store.submit(manga(),2,2)
         self.store.update_chapter(self.store.chapters(task['id'])[0]['id'],status='IMPORTED')
         self.store.finish(task['id'],'COMPLETED')
-        for text in ('/my','/like 42','/report 42','/random','/rank'):
-            await self.send(text)
+        await self.send('/my')
         self.answer.assert_not_awaited()
         await self.send('/my',kind='private',chat_id=2)
         self.assertIn('reader2@example.com',self.answer.call_args.args[0])
@@ -398,7 +406,51 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
         private={c.command for c in calls[1].args[0]}
         self.assertTrue({'jm','my','report','like','random','rank'} <= private)
         self.assertFalse({'queue','status','cancel','retry','library'} & private)
-        self.assertEqual([c.command for c in calls[2].args[0]],['jm'])
+        self.assertEqual({c.command for c in calls[2].args[0]}, {'jm','report','like','random','rank'})
+        self.assertEqual(calls[2].kwargs['scope'].type, 'all_group_chats')
+
+    async def test_community_commands_work_in_groups_with_mentions_and_cross_chat_dedup(self):
+        task = self.store.submit(manga(), 2, 2)
+        self.store.update_chapter(self.store.chapters(task['id'])[0]['id'], status='IMPORTED')
+        self.store.finish(task['id'], 'COMPLETED')
+        for kind in ('group', 'supergroup'):
+            for command, expected in (('/like', '赞'), ('/report', '举报'),
+                                      ('/random', '漫画 ID：42'), ('/rank', 'ID：42')):
+                argument = ' 42' if command in ('/like', '/report') else ''
+                self.answer.reset_mock()
+                await self.send(command + '@OtherBot' + argument, kind=kind)
+                self.answer.assert_not_awaited()
+                await self.send(command + '@tEsTbOt' + argument, kind=kind)
+                self.answer.assert_awaited_once()
+                self.assertIn(expected, self.answer.call_args.args[0])
+            for command in ('/like', '/report', '/random extra', '/rank extra'):
+                await self.send(command, kind=kind)
+                self.assertIn('用法', self.answer.call_args.args[0])
+        await self.send('/like 42', kind='private', chat_id=2)
+        self.assertIn('你已点过赞', self.answer.call_args.args[0])
+        await self.send('/report 42', kind='private', chat_id=2)
+        self.assertIn('你已举报过', self.answer.call_args.args[0])
+        for table in ('manga_likes', 'manga_reports', 'report_deliveries'):
+            self.assertEqual(self.store.connection.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0], 1)
+        self.assertEqual(len(self.store.tasks()), 1)
+        self.provider.get_manga.assert_not_awaited()
+        self.accounts.credentials.assert_not_called()
+
+    async def test_group_community_denies_unregistered_blocked_and_invalid_senders(self):
+        for kind in ('group', 'supergroup'):
+            for command in ('/like 42', '/report 42', '/random', '/rank'):
+                await self.send(command, kind=kind, user_id=3)
+                self.assertIn('注册', self.answer.call_args.args[0])
+                self.users.set_blocked(1, 2, True)
+                await self.send(command, kind=kind)
+                self.assertIn('禁用', self.answer.call_args.args[0])
+                self.answer.reset_mock()
+                await self.send(command, kind=kind, user_id=1, sender_chat=Chat(id=-100, type='supergroup'))
+                await self.send(command, kind='channel', user_id=1)
+                await self.send(command, kind=kind, user_id=1, is_bot=True)
+                self.answer.assert_not_awaited()
+        self.assertEqual(self.store.connection.execute('SELECT COUNT(*) FROM manga_likes').fetchone()[0], 0)
+        self.assertEqual(self.store.connection.execute('SELECT COUNT(*) FROM manga_reports').fetchone()[0], 0)
 
     async def test_random_uploads_local_cover_and_caption(self):
         import io
@@ -414,9 +466,11 @@ class GroupDispatcherTests(unittest.IsolatedAsyncioTestCase):
             archive.writestr('000001.png', data.getvalue())
         self.store.update_chapter(chapter['id'], status='IMPORTED')
         self.store.finish(task['id'], 'COMPLETED')
-        await self.send('/random', kind='private', chat_id=2)
-        self.answer.assert_not_awaited()
-        self.answer_photo.assert_awaited_once()
+        for kind, chat_id in (('private', 2), ('group', -100), ('supergroup', -100)):
+            self.answer_photo.reset_mock()
+            await self.send('/random', kind=kind, chat_id=chat_id)
+            self.answer.assert_not_awaited()
+            self.answer_photo.assert_awaited_once()
         call = self.answer_photo.call_args
         with Image.open(io.BytesIO(call.args[0].data)) as image:
             self.assertEqual(image.format, 'JPEG')

@@ -2,6 +2,7 @@
 import logging
 
 from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats
+from jmemby.bot.access import GROUP_USER_COMMANDS
 
 PRIVATE_COMMANDS = (
     ('help', '使用帮助'), ('jm', '直接下载漫画：/jm ID'),
@@ -17,7 +18,7 @@ async def configure_commands(bot):
     try:
         await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
         await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
-        await bot.set_my_commands([BotCommand(command='jm', description='直接下载漫画：/jm ID')],
+        await bot.set_my_commands([c for c in commands if '/' + c.command in GROUP_USER_COMMANDS],
                                   scope=BotCommandScopeAllGroupChats())
     except Exception as exc:
         logging.getLogger(__name__).warning('command_menu_update_failed type=%s', type(exc).__name__)

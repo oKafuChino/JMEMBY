@@ -30,7 +30,7 @@ Telegram 发送接口没有客户端幂等键：若 Telegram 已收到消息，�
 
 每次允许的 Bot 消息和按钮操作都会重新核验，不缓存“已加入”结果；退出任意一处后下次操作被拒绝。`member`、`administrator`、`creator` 视为已加入；`restricted` 仅在 `is_member=true` 时放行；`left`、`kicked` 不放行。Bot 失去管理员权限、Telegram 限流、网络或超时错误均暂不放行，并提示联系管理员或稍后重试，不暴露内部异常。成员查询规则参见 [Telegram getChatMember](https://core.telegram.org/bots/api#getchatmember)。
 
-限制覆盖注册、阅读账号、个人资料、下载、点赞、举报、推荐、排行和旧确认按钮；群聊仍仅支持 `/jm` 及管理员 `/kk`、`/white`。加入要求不会替代原有注册、邀请码、封禁和确认按钮归属检查，也不会取消已有任务或撤销 Komga 账号。网页批量下载由管理员发起，不受加入限制影响。
+限制覆盖注册、阅读账号、个人资料、下载、点赞、举报、推荐、排行和旧确认按钮；群聊支持 `/jm`、`/like`、`/report`、`/random`、`/rank` 及管理员 `/kk`、`/white`。加入要求不会替代原有注册、邀请码、封禁和确认按钮归属检查，也不会取消已有任务或撤销 Komga 账号。网页批量下载由管理员发起，不受加入限制影响。
 
 “关闭限制”无需 Telegram 在线或重新核验，关闭后保留已保存配置。配置存于现有 SQLite `settings` 表，主控重启后保留，加入限制本身无需额外迁移，当前数据库版本为 schema 15；只需更新主控，无需更新 Agent。接口 `GET/POST /api/membership` 仅管理员可用，写入沿用 Origin 与 CSRF 校验。退出网页会清空当前页面中的加入链接。
 

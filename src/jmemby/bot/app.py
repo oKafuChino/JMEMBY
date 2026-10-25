@@ -133,7 +133,7 @@ def create_dispatcher(service, settings, accounts, diagnostics, web_auth=None):
                     help_text += "\n管理员：/admin /users [页码]\n/registration on|off\n/ban 用户ID /unban 用户ID\n/disk 磁盘状态"
                     help_text += "\n/invite_mode on|off\n/invite_create [次数]\n/invites [页码]\n/invite_revoke 编号"
                     help_text += "\n群聊回复用户：/kk 授予注册资格，/white 设为白名单"
-                help_text += "\n/jm ID或链接 直接下载，无需确认\n群聊普通用户仅支持 /jm；请先在私聊注册。"
+                help_text += "\n/jm ID或链接 直接下载，无需确认\n群聊支持 /jm、/like、/report、/random、/rank；请先在私聊注册。"
                 await message.answer(help_text, reply_markup=menu(user_id))
             elif command == "/register":
                 result = users.register(user_id, message.from_user.username, message.from_user.full_name, argument.strip())
